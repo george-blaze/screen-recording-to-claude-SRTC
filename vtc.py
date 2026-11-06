@@ -121,15 +121,25 @@ def audio_cmd(c, out):
     return cmd
 
 
+def media_duration(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    try: return float(r.stdout.strip())
+    except ValueError: return None
+
+
 def mux_audio(video, wav):
-    """Put the separately captured wav into the mp4 (video copied, audio → aac). Returns True on success."""
+    """Put the separately captured wav into the mp4 (video copied, audio → aac). Both stopped together, so the mic started
+    (video length - audio length) seconds after the screen: the audio is shifted by that much so transcript times match the
+    frame stamps. Returns the shift in seconds, or None on failure."""
     tmp = video.with_name(video.stem + ".mux.mp4")
-    r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(wav),
+    vd, ad = media_duration(video), media_duration(wav)
+    delta = round(vd - ad, 3) if (vd and ad and 0 < vd - ad < 5) else 0.0
+    r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-itsoffset", str(delta), "-i", str(wav),
                         "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k",
                         "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(tmp)], capture_output=True, text=True)
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 1024:
-        print(f"mux failed: {r.stderr.strip()[-200:]}", flush=True); tmp.unlink(missing_ok=True); return False
-    tmp.replace(video); return True
+        print(f"mux failed: {r.stderr.strip()[-200:]}", flush=True); tmp.unlink(missing_ok=True); return None
+    tmp.replace(video); print(f"  mic audio muxed (started {delta:.2f}s after the screen)", flush=True); return delta
 
 
 def screencapture_cmd(c, out):
@@ -239,8 +249,11 @@ def cmd_run(c, out):
         if piped_wav: piped_wav.unlink(missing_ok=True)
         STATE.unlink(missing_ok=True); return
     if piped_wav is not None:
-        if piped_wav.exists() and piped_wav.stat().st_size > 48000 and mux_audio(video, piped_wav): piped_wav.unlink(missing_ok=True)
-        else: notify("SRTC", "No microphone audio was captured for this take.", SOUND_ALERT)
+        delta = mux_audio(video, piped_wav) if piped_wav.exists() and piped_wav.stat().st_size > 48000 else None
+        if delta is None: notify("SRTC", "No microphone audio was captured for this take.", SOUND_ALERT)
+        else:
+            piped_wav.unlink(missing_ok=True)
+            if stream: stream.offset = delta          # chunk times are mic times; shift them onto the screen clock
     ev = STATE_DIR / "events.jsonl"
     if ev.exists():
         ev.replace(video.with_suffix(".events.jsonl"))
@@ -529,7 +542,7 @@ class StreamASR:
         except Exception: self.worker.kill()
         lines = []
         for i, f in enumerate(sorted(self.chunks.glob("*.wav"))):
-            base = i * self.c["chunk_seconds"]
+            base = i * self.c["chunk_seconds"] + getattr(self, "offset", 0.0)
             segs = [sg for sg in self.results.get(f, []) if self.plausible(sg)]
             if len(segs) == 1 and segs[0]["text"].strip().lower() in self.HALLUCINATIONS: segs = []
             texts = [sg["text"].strip().lower() for sg in segs]
