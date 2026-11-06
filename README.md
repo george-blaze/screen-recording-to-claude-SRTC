@@ -28,7 +28,7 @@ in **[docs/installation.md](docs/installation.md)**.
 ### Record a take
 
 1. Open the Claude chat you want the request in (or a new one).
-2. **⌃⌘S** → 3-2-1, a chime; the menu bar shows `● 0:12 ▁▃▅▇▅▂` counting up, the bars bouncing with your voice
+2. **⌃⌘S** → 3-2-1 while the mic opens (AirPods need a moment to switch profiles), then a chime: talk. The menu bar shows `● 0:12 ▁▃▅▇▅▂` counting up, the bars bouncing with your voice
    (orange "silent" / "no mic" if nothing is being heard).
 3. Talk, point, circle, click. Mouse and keyboard work normally; nothing is blocked. When the cursor is on another
    display the agent snapshots that display, so pointing at something on the laptop screen still gets its screenshot.

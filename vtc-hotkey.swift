@@ -43,12 +43,12 @@ func notifyUser(_ title: String, _ text: String) {
 }
 
 // ---------------- state ----------------
-struct State { var phase: String; var started: Double; var cap: Double; var warn: Double }
+struct State { var phase: String; var started: Double; var cap: Double; var warn: Double; var micMode: String }
 func readState() -> State? {
     guard let d = try? Data(contentsOf: stateFile), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
     let c = cfg()
     return State(phase: j["phase"] as? String ?? "recording", started: j["started"] as? Double ?? Date().timeIntervalSince1970,
-                 cap: (c["cap_seconds"] as? Double) ?? 600, warn: (c["warn_seconds"] as? Double) ?? 20)
+                 cap: (c["cap_seconds"] as? Double) ?? 600, warn: (c["warn_seconds"] as? Double) ?? 20, micMode: j["mic_mode"] as? String ?? "voice")
 }
 
 // ---------------- UI ----------------
@@ -131,28 +131,29 @@ func showPanel(_ big: String, _ small: String, _ color: NSColor, size: CGFloat =
 func hidePanel() { if panel.isVisible { panel.orderOut(nil) } }
 func startCountdown() {
     guard !counting else { return }
-    counting = true; var n = 3
-    showPanel("3", "recording starts · Esc to abort", red)
-    item.button?.attributedTitle = attributed("● 3", .systemRed)
+    counting = true; var n = Int((cfg()["lead_seconds"] as? Double) ?? 3); if n < 1 { n = 1 }
+    run("toggle")                                            // the mic opens now and warms up during the count; the screen follows
+    showPanel("\(n)", "mic opening · Esc to abort", red)
+    item.button?.attributedTitle = attributed("● \(n)", .systemRed)
     countTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { t in
         n -= 1
         if n > 0 {
-            showPanel("\(n)", "recording starts · Esc to abort", red); item.button?.attributedTitle = attributed("● \(n)", .systemRed)
+            showPanel("\(n)", "mic opening · Esc to abort", red); item.button?.attributedTitle = attributed("● \(n)", .systemRed)
         } else {
             t.invalidate(); countTimer = nil; counting = false
-            showPanel("GO", "talk after the chime", red)      // runner plays the start chime once the mic is live
-            toastUntil = Date().addingTimeInterval(1.5)
-            run("toggle")
+            showPanel("GO", "talk after the chime", red)      // the runner plays the chime once the mic delivers and the screen rolls
+            toastUntil = Date().addingTimeInterval(2.0)
         }
     }
 }
 func cancelCountdown() {
-    countTimer?.invalidate(); countTimer = nil; counting = false; hidePanel(); refresh()
+    countTimer?.invalidate(); countTimer = nil; counting = false; hidePanel(); run("cancel"); refresh()
 }
 func toggleAction() {
     if counting { cancelCountdown(); return }
-    if readState()?.phase == "recording" { run("toggle") }          // stop
-    else if readState() == nil { startCountdown() }                 // idle → 3-2-1 → start
+    let phase = readState()?.phase
+    if phase == "recording" { run("toggle") }                       // stop
+    else if phase == nil { startCountdown() }                       // idle → 3-2-1 (mic warming) → start
 }
 func showFinished() {
     showPanel("Finished", "recording session delivered", green, size: 30)
@@ -169,6 +170,7 @@ var meter = [Double](repeating: 0, count: 10)
 var meterTimer: Timer? = nil
 var silentSince: Date? = nil
 var recTitle = ""                                        // "● 0:12" / "⚠ 9 s", set by refresh(); the meter appends the bars
+var recMicMode = "voice"                                 // "raw" = plain mic through ffmpeg: no level file, so no bars
 func readLevel() -> Double? {
     guard let a = try? FileManager.default.attributesOfItem(atPath: levelFile.path), let m = a[.modificationDate] as? Date,
           Date().timeIntervalSince(m) < 1.5,                       // stale file = the mic process is gone
@@ -176,6 +178,7 @@ func readLevel() -> Double? {
     return v
 }
 func drawMeter() {
+    if recMicMode == "raw" { item.button?.attributedTitle = attributed(recTitle + " plain mic", .systemRed); return }
     let lv = readLevel()
     meter.removeFirst(); meter.append(lv ?? 0)
     if (lv ?? 0) > 0.06 { silentSince = nil } else if silentSince == nil { silentSince = Date() }
@@ -207,8 +210,12 @@ func refresh() {
         } else {
             recTitle = String(format: "● %d:%02d", mm, ss); if !toast { hidePanel() }
         }
-        setMeter(on: true); drawMeter()
+        recMicMode = st.micMode; setMeter(on: true); drawMeter()
         toggleItem.title = "Stop recording"; cancelItem.isHidden = false; micTestItem.isEnabled = false
+    } else if let st = st, st.phase == "starting" {
+        setMeter(on: false)
+        item.button?.attributedTitle = attributed("● …", .systemRed)                 // mic warming up; the chime follows
+        toggleItem.title = "Abort start"; cancelItem.isHidden = false; micTestItem.isEnabled = false
     } else if let st = st, st.phase == "processing" {
         setMeter(on: false)
         item.button?.attributedTitle = attributed("⟳ processing", .labelColor); if !toast { hidePanel() }

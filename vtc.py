@@ -29,6 +29,7 @@ DEFAULTS = {
     "asr_engine": "auto",                     # auto = Deepgram nova-3 when deepgram_api_key / DEEPGRAM_API_KEY is set, else local Whisper | deepgram | whisper
     "deepgram_api_key": "",                   # https://console.deepgram.com → API keys (what VoiceOS uses under the hood)
     "cap_seconds": 600,                       # 10 min, same as Claude's native recorder
+    "lead_seconds": 3,                        # the 3-2-1: the mic opens at once, the screen + chime follow after this (or once the mic delivers)
     "warn_seconds": 20,                       # sound + notification this long before the cap
     "fps": 5, "width": 1920,
     "grid": "2x2", "asr": "stream",                # stream (Whisper during recording) | auto (Apple, after) | mlx | none
@@ -88,6 +89,7 @@ def read_state():
 
 
 def alive(pid):
+    if not pid: return False
     try: os.kill(pid, 0); return True
     except OSError: return False
 
@@ -149,7 +151,7 @@ def mux_audio(video, wav, tail=0.0):
     much so transcript times match the frame stamps. Returns the shift in seconds, or None on failure."""
     tmp = video.with_name(video.stem + ".mux.mp4")
     vd, ad = media_duration(video), media_duration(wav)
-    delta = round(vd - (ad - tail), 3) if (vd and ad and -8 < vd - (ad - tail) < 8) else 0.0
+    delta = round(vd - (ad - tail), 3) if (vd and ad and -20 < vd - (ad - tail) < 8) else 0.0
     # delta > 0: mic started after the screen → delay the audio; delta < 0: mic was live before the first frame → trim its head
     ain = (["-itsoffset", str(delta)] if delta > 0 else ["-ss", str(-delta)] if delta < 0 else []) + ["-i", str(wav)]
     r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video)] + ain + [
@@ -169,7 +171,7 @@ def screencapture_cmd(c, out):
 
 def cmd_start(c):
     st = read_state()
-    if st and alive(st.get("recorder_pid", -1)):
+    if st and (alive(st.get("recorder_pid", -1)) or (st.get("phase") == "starting" and alive(st.get("runner_pid")))):
         print("already recording"); return
     STATE_DIR.mkdir(parents=True, exist_ok=True); Path(c["recordings"]).mkdir(parents=True, exist_ok=True)
     out = Path(c["recordings"]) / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
@@ -177,6 +179,8 @@ def cmd_start(c):
     runner = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_run", str(out)],
                               stdout=open(STATE_DIR / "runner.log", "a"), stderr=subprocess.STDOUT,
                               start_new_session=True)
+    # provisional state at once, so a second hotkey press cannot start a second runner while this one opens the mic
+    STATE.write_text(json.dumps({"runner_pid": runner.pid, "recorder_pid": None, "phase": "starting", "file": str(out), "started": time.time()}))
     print(f"● recording → {out}  (runner pid {runner.pid})")
 
 
@@ -194,22 +198,29 @@ def cmd_run(c, out):
                     try: q.kill()
                     except Exception: pass
         mic_p = aud_p = None
-    def launch(b, voice=True):
+    def launch(b, voice=True, lead=True):
+        """Mic first, then the screen. Returns the screen recorder, or None when the voice-processed mic delivered nothing
+        (the caller falls back to the plain mic). With `lead` the screen waits for the agent's 3-2-1 (lead_seconds)."""
         nonlocal mic_p, aud_p
         stop_mic()
+        t_launch = time.time()
         piped = b == "ffmpeg" and voice and use_miccap(c) and c["mic"] not in (None, "", "none")
         cmd = ffmpeg_cmd(c, out, piped_mic=piped) if b == "ffmpeg" else screencapture_cmd(c, out)
+        base = {"runner_pid": os.getpid(), "backend": b, "mic": _sc.LAST_MIC_NAME, "mic_mode": "voice" if piped else "raw",
+                "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")), "started": t_launch}
+        STATE.write_text(json.dumps(dict(base, phase="starting", recorder_pid=None, mic_pid=None, audio_pid=None)))
         if piped:
-            # mic first, at once: people start talking the moment they press the hotkey. The screen follows; the mux
-            # trims whatever audio precedes the first frame and the transcript keeps every word.
+            # mic at once, during the 3-2-1: AirPods switch to their hands-free profile when the mic opens and can take
+            # several seconds to deliver; the screen and the chime wait until audio is flowing so the first words are kept.
             mic_p = subprocess.Popen([str(MICCAP), "--device", _sc.LAST_MIC_NAME], stdout=subprocess.PIPE, stderr=open(STATE_DIR / "miccap.log", "w"))
             aud_p = subprocess.Popen(audio_cmd(c, out), stdin=mic_p.stdout, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / "recorder-audio.log", "w"))
             mic_p.stdout.close()                 # the audio ffmpeg owns the read end; miccap sees EPIPE when it stops
+            STATE.write_text(json.dumps(dict(base, phase="starting", recorder_pid=None, mic_pid=mic_p.pid, audio_pid=aud_p.pid)))
+            if not (first_bytes(aud_p, out.with_suffix(".wav"), 8) and mic_p.poll() is None and aud_p.poll() is None): return None
+        if lead: time.sleep(max(0.0, c.get("lead_seconds", 3) - (time.time() - t_launch)))
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-{b}.log", "w"))
-        STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "mic_pid": mic_p.pid if mic_p else None,
-                                     "audio_pid": aud_p.pid if aud_p else None, "backend": b, "phase": "recording", "mic": _sc.LAST_MIC_NAME,
-                                     "mic_mode": "voice" if piped else "raw", "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")),
-                                     "started": time.time()}))
+        STATE.write_text(json.dumps(dict(base, phase="recording", recorder_pid=p.pid, mic_pid=mic_p.pid if mic_p else None,
+                                         audio_pid=aud_p.pid if aud_p else None, started=time.time())))
         return p
     def kill_rec(p):
         try: p.send_signal(signal.SIGINT); p.wait(timeout=3)
@@ -222,27 +233,24 @@ def cmd_run(c, out):
             if p.poll() is not None: return False
             if f.exists() and f.stat().st_size >= 1024: return True
         return False
-    t0 = time.time()
     p = launch("ffmpeg" if backend in ("auto", "ffmpeg") else "screencapture")
-    notify("SRTC", "Recording. Press the hotkey again to stop.", SOUND_START)
-    if mic_p is not None:
-        # voice-processed mic must be producing within a few seconds, else record with the plain mic
-        ok = first_bytes(aud_p, out.with_suffix(".wav"), 6) and mic_p.poll() is None and aud_p.poll() is None
-        if not ok:
-            err = (STATE_DIR / "miccap.log").read_text().strip().splitlines() if (STATE_DIR / "miccap.log").exists() else []
-            why = err[-1] if err else "no audio arrived"
-            kill_rec(p); out.unlink(missing_ok=True); out.with_suffix(".wav").unlink(missing_ok=True)
-            shutil.rmtree(out.with_suffix(".chunks"), ignore_errors=True)
-            print(f"miccap failed ({why}) → raw mic", flush=True)
-            notify("SRTC", f"Voice-processed mic failed ({why[:60]}); recording with the plain mic.", SOUND_ALERT)
-            p = launch("ffmpeg", voice=False); t0 = time.time()
+    if p is None:
+        # the voice-processed mic delivered nothing in 8 s: record with the plain mic
+        err = (STATE_DIR / "miccap.log").read_text().strip().splitlines() if (STATE_DIR / "miccap.log").exists() else []
+        why = next((l for l in reversed(err) if "miccap: " not in l or "failed" in l or "missing" in l), "no audio arrived")
+        out.with_suffix(".wav").unlink(missing_ok=True); shutil.rmtree(out.with_suffix(".chunks"), ignore_errors=True)
+        print(f"miccap failed ({why}) → raw mic", flush=True)
+        notify("SRTC", f"Voice-processed mic failed ({why[:60]}); recording with the plain mic.", SOUND_ALERT)
+        p = launch("ffmpeg", voice=False, lead=False)
+    t0 = time.time()
+    notify("SRTC", "Recording. Press the hotkey again to stop.", SOUND_START)   # the chime: the mic is live, the screen is rolling
     if backend == "auto" and not first_bytes(p, out, 12):   # up to 12 s for the first bytes (USB mics can take a few seconds to open)
         err = (STATE_DIR / "recorder-ffmpeg.log").read_text().strip().splitlines()
         last = err[-1] if err else "no frames arrived (Screen Recording / Microphone permission for vtc-hotkey?)"
         kill_rec(p)
         print(f"ffmpeg produced no data in 12 s: {last} → falling back to screencapture", flush=True)
         notify("SRTC", f"ffmpeg failed: {last[:90]} — trying Apple recorder", SOUND_ALERT)
-        p = launch("screencapture"); t0 = time.time()
+        p = launch("screencapture", lead=False); t0 = time.time()
     warned = False; warn_proc = None
     stream = StreamASR(out.with_suffix(".chunks"), c) if (c["asr"] == "stream" and (read_state() or {}).get("backend") == "ffmpeg") else None
     while p.poll() is None:
@@ -301,6 +309,7 @@ def cmd_run(c, out):
 
 def cmd_stop(c):
     st = read_state()
+    if st and st.get("phase") == "starting" and alive(st.get("runner_pid")): print("still starting (mic warming up)"); return
     if not st or not alive(st.get("recorder_pid", -1)):
         print("not recording"); STATE.unlink(missing_ok=True); return
     os.kill(st["recorder_pid"], signal.SIGINT)   # ffmpeg / screencapture finalize the file on SIGINT; the runner stops the mic 1 s later
@@ -362,7 +371,7 @@ def cmd_mictest(c):
 
 def cmd_toggle(c):
     st = read_state()
-    if st and alive(st.get("recorder_pid", -1)): cmd_stop(c)
+    if st and (alive(st.get("recorder_pid", -1)) or (st.get("phase") == "starting" and alive(st.get("runner_pid")))): cmd_stop(c)
     else: cmd_start(c)
 
 
@@ -721,6 +730,7 @@ def detect_moments(events, start_epoch, max_n):
                 before = [p for p in moves[max(0, d_i - 60):d_i] if dw[0]["t"] - p["t"] <= 2.0]
                 if before and max(math.hypot(p["x"] - cx, p["y"] - cy) for p in before) >= 120:
                     moments.append({"t": moves[j]["t"] - start_epoch, "x": cx, "y": cy, "kind": "pointed at"}); last_mark = moves[j]["t"] - start_epoch
+    moments = [m for m in moments if m["t"] >= 0]          # the mouse log can start before the first frame (3-2-1)
     moments.sort(key=lambda m: m["t"])
     out = []
     for m in moments:                      # merge moments closer than 1.5 s, prefer circled > clicked > pointed
