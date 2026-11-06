@@ -611,7 +611,11 @@ class StreamASR:
             self.muffled_warned = True
             mic = st.get("mic") or "the mic"
             print(f"  ⚠ live: muffled audio (clarity {hf * 100:.0f}%) on {mic}", flush=True)
-            notify("SRTC", f"Mic sounds muffled on {mic}: sit closer / face it, or put AirPods in. Transcript will suffer.", SOUND_ALERT)
+            # voice-processed audio (AirPods hands-free profile, beamformed MacBook mic) is band-limited by design and
+            # transcribes perfectly at 2-7 % clarity: the spectrum says nothing there, so no buzz mid-take; the final
+            # transcript-based check still flags junk. The live alert is for the plain mic only.
+            if (st.get("mic_mode") or "voice") == "raw":
+                notify("SRTC", f"Mic sounds muffled on {mic}: sit closer / face it, or put AirPods in. Transcript will suffer.", SOUND_ALERT)
 
     @staticmethod
     def chunk_rms_db(path):
