@@ -12,8 +12,10 @@ for line in sys.stdin:
     if not path: continue
     try:
         lang = os.environ.get("VTC_WHISPER_LANGUAGE") or None
-        r = mlx_whisper.transcribe(path, path_or_hf_repo=MODEL, condition_on_previous_text=False, language=lang)
-        segs = [{"start": s["start"], "end": s["end"], "text": s["text"].strip(), "nsp": s.get("no_speech_prob", 0), "lp": s.get("avg_logprob", 0), "cr": s.get("compression_ratio", 0)} for s in r["segments"] if s["text"].strip()]
+        r = mlx_whisper.transcribe(path, path_or_hf_repo=MODEL, condition_on_previous_text=False, language=lang, word_timestamps=True)
+        segs = [{"start": s["start"], "end": s["end"], "text": s["text"].strip(), "nsp": s.get("no_speech_prob", 0), "lp": s.get("avg_logprob", 0), "cr": s.get("compression_ratio", 0),
+                 "words": [{"w": w["word"].strip(), "s": w["start"], "e": w["end"]} for w in s.get("words", []) if w["word"].strip()]}
+                for s in r["segments"] if s["text"].strip()]
         print(json.dumps({"path": path, "segments": segs}), flush=True)
     except Exception as e:
         print(json.dumps({"path": path, "error": str(e)}), flush=True)

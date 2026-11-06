@@ -26,7 +26,8 @@ DEFAULTS = {
     "screen": 0,
     "mic": "auto",                            # auto = headphones/headset if connected, else the system input; or a name, a priority list, or "none"
     "mic_mode": "voice",                      # voice = Apple voice-processing capture via miccap (beamforming, auto gain, noise suppression) | raw = plain mic
-    "asr_engine": "whisper",                  # whisper (local, asr_worker.py) | deepgram (cloud nova-3, asr_deepgram.py + DEEPGRAM_API_KEY)
+    "asr_engine": "auto",                     # auto = Deepgram nova-3 when deepgram_api_key / DEEPGRAM_API_KEY is set, else local Whisper | deepgram | whisper
+    "deepgram_api_key": "",                   # https://console.deepgram.com → API keys (what VoiceOS uses under the hood)
     "cap_seconds": 600,                       # 10 min, same as Claude's native recorder
     "warn_seconds": 20,                       # sound + notification this long before the cap
     "fps": 5, "width": 1920,
@@ -37,6 +38,7 @@ DEFAULTS = {
     "deliver": "paste",                       # paste (into the chat in front of you) | deeplink (new session) | clipboard
     "auto_send": False,                       # paste mode: press Return after pasting
     "paste_max_images": 10,
+    "prompt_style": "plain",                  # plain = just the words with [n] markers + a screenshot per pointer moment | full = digest-style prompt
     "max_prompt_chars": 1200,
     "hotkey": "ctrl+cmd+s",                   # read by vtc-hotkey at launch; restart the agent after changing
     "pointer_moments": 24,
@@ -265,11 +267,14 @@ def cmd_run(c, out):
     ev = STATE_DIR / "events.jsonl"
     if ev.exists():
         ev.replace(video.with_suffix(".events.jsonl"))
+    vd = media_duration(video)
+    if vd: st["video_start"] = t_end - vd; STATE.write_text(json.dumps(st))   # first frame's wall-clock time: pointer events line up with it
     notify("SRTC", "Processing…")
     try:
         try: transcript = stream.finish() if stream else None
         except Exception as e: print(f"transcript failed: {e}", flush=True); transcript = None
-        finish(c, video, transcript=transcript, mic=st.get('mic'), mic_mode=st.get("mic_mode"), asr_quality=getattr(stream, "quality", None))
+        finish(c, video, transcript=transcript, mic=st.get('mic'), mic_mode=st.get("mic_mode"), asr_quality=getattr(stream, "quality", None),
+               segments=getattr(stream, "segments", None))
         prune(c)
     finally:
         STATE.unlink(missing_ok=True)
@@ -391,7 +396,49 @@ def cmd_usage(c):
 
 
 # ----------------------------------------------------------------- deliver ---
-def finish(c, video, transcript=None, mic=None, mic_mode=None, asr_quality=None):
+def transcript_segments(transcript):
+    """'[mm:ss] text' lines → segments without word timing (Apple/mlx-after-the-take modes, or an old transcript.txt)."""
+    import re
+    segs = []
+    for l in (transcript or "").splitlines():
+        m = re.match(r"\[(\d+):(\d+)\]\s*(.*)", l.strip())
+        if m: segs.append({"start": int(m[1]) * 60 + int(m[2]), "end": None, "text": m[3].strip(), "words": []})
+    for a, b in zip(segs, segs[1:]): a["end"] = b["start"]
+    if segs: segs[-1]["end"] = segs[-1]["start"] + 5
+    return segs
+
+
+def words_with_markers(segments, moments):
+    """The spoken text in order, with [n] right after the word being said when pointer moment n happened."""
+    import bisect
+    toks = []                                   # [text, end_time, gap_before]
+    prev_end = None
+    for sg in segments:
+        gap = (sg["start"] - prev_end) if prev_end is not None else 0.0
+        ws = sg.get("words") or []
+        if ws:
+            for k, w in enumerate(ws): toks.append([w["w"], w["e"], gap if k == 0 else 0.0])
+        elif sg["text"]: toks.append([sg["text"], sg["start"], gap])      # no word timing: a marker lands after the sentence in progress
+        prev_end = sg["end"] if sg["end"] is not None else sg["start"]
+    ends = [t[1] for t in toks]
+    marks = {}                                  # token index (after which) → [n…]; -1 = before everything
+    for n, m in enumerate(moments, 1):
+        idx = bisect.bisect_right(ends, m["t"]) - 1
+        marks.setdefault(idx, []).append(n)
+    out = []
+    if -1 in marks: out.append(" ".join(f"[{n}]" for n in marks[-1]))
+    for i, (txt, _, gap) in enumerate(toks):
+        if out and gap >= 3.0: out[-1] += "\n"; out.append(txt)
+        else: out.append(txt)
+        if i in marks: out.append(" ".join(f"[{n}]" for n in marks[i]))
+    text = ""
+    for piece in out:
+        if not text or text.endswith("\n"): text += piece
+        else: text += " " + piece
+    return text.strip()
+
+
+def finish(c, video, transcript=None, mic=None, mic_mode=None, asr_quality=None, segments=None):
     import argparse
     from screencast import digest
     asr = {"stream": "mlx", "auto": "auto", "mlx": "mlx", "apple": "apple", "none": "none"}[c["asr"]]
@@ -400,6 +447,10 @@ def finish(c, video, transcript=None, mic=None, mic_mode=None, asr_quality=None)
                            jpeg_q=3, asr=asr, keep_raw=False)
     workdir = video.with_name(video.stem + ".digest"); workdir.mkdir(parents=True, exist_ok=True)
     if transcript is not None: (workdir / "transcript.txt").write_text(transcript)
+    if segments is not None: (workdir / "transcript.json").write_text(json.dumps(segments))
+    elif (workdir / "transcript.json").exists():
+        try: segments = json.loads((workdir / "transcript.json").read_text())
+        except Exception: segments = None
     import screencast as _sc
     _sc.LAST_MIC_NAME = mic or _sc.LAST_MIC_NAME
     _sc.MIC_MODE = mic_mode or c.get("mic_mode", "voice"); _sc.ASR_QUALITY = asr_quality
@@ -411,26 +462,32 @@ def finish(c, video, transcript=None, mic=None, mic_mode=None, asr_quality=None)
         md = workdir / "DIGEST.md"; txt = md.read_text()
         lines = ["", "## Pointed at (zoomed, red box = cursor)", ""]
         for i, m in enumerate(moments):
-            lines.append(f"- {hms(m['t'])} {m['kind']}  → pointer sheet {i // 4 + 1}, tile {i % 4 + 1}")
-        lines += ["", "Pointer sheets: " + ", ".join(f"`{p}`" for p in pointer_sheets), ""]
+            lines.append(f"- {hms(m['t'])} {m['kind']}  → " + (f"[{i + 1}] `{m['shot']}`" if "shot" in m else f"pointer sheet {i // 4 + 1}, tile {i % 4 + 1}"))
+        if not all("shot" in m for m in moments): lines += ["", "Pointer sheets: " + ", ".join(f"`{p}`" for p in pointer_sheets), ""]
         md.write_text(txt.replace("## Transcript", "\n".join(lines) + "\n## Transcript", 1))
     spoken = " ".join(l.split("] ", 1)[-1] for l in transcript.splitlines() if l.strip())
     short = spoken[: c["max_prompt_chars"]] + ("…" if len(spoken) > c["max_prompt_chars"] else "")
     warn = (workdir / "audio_warning.txt").read_text().strip() if (workdir / "audio_warning.txt").exists() else ""
-    if warn:
-        notify("SRTC", "Audio was very quiet — wrong microphone? Check mic in ~/.config/vtc.json", SOUND_WARN)
+    if warn and not os.environ.get("VTC_DELIVER"):
+        notify("SRTC", warn.split(":")[0].capitalize() + " — see DIGEST.md", SOUND_ALERT)   # one Sosumi, never the countdown
+    plain = c.get("prompt_style", "plain") == "plain"
+    if plain:
+        segs = segments if segments else transcript_segments(transcript)
+        prompt = words_with_markers(segs, moments) if segs else "(no speech captured)"
+        if moments and not prompt.strip("[]0123456789 \n"): prompt = "(no speech captured) " + prompt
     warn_line = f"⚠ {warn}\n" if warn else ""
-    prompt = (f"Screen recording request (SRTC). My spoken words are the request:\n\"{short or '(no speech captured)'}\"\n"
+    if not plain: prompt = (f"Screen recording request (SRTC). My spoken words are the request:\n\"{short or '(no speech captured)'}\"\n"
               f"{warn_line}"
               f"Attached: DIGEST.md (full timestamped transcript + sheet index), {len(pointer_sheets)} pointer sheets (zoomed views of what I pointed at, circled or clicked, red box = cursor) and {len(sheets)} sheets of what was on my screen "
               f"while I spoke; each tile is stamped mm:ss and lines up with the transcript. Do what I asked; use the frames to "
               f"resolve 'this', 'here', 'that'. If the request is unclear, ask one question."
               + (f" (mic: {mic})" if mic else ""))
     subprocess.run(["pbcopy"], input=prompt, text=True)
+    (workdir / "prompt.txt").write_text(prompt)
     if c["deliver"] == "paste":
         from screencast import tool
-        images = (pointer_sheets + sheets)[: c["paste_max_images"]]
-        body = (prompt + f"\n\nFiles on disk if you need more: DIGEST.md at {workdir / 'DIGEST.md'} "
+        images = pointer_sheets if plain else (pointer_sheets + sheets)[: c["paste_max_images"]]
+        body = prompt if plain else (prompt + f"\n\nFiles on disk if you need more: DIGEST.md at {workdir / 'DIGEST.md'} "
                 f"(full transcript + index), all sheets in {workdir / 'sheets'} and {workdir / 'pointer'}.")
         tf = workdir / "prompt.txt"; tf.write_text(body)
         cmd = [str(HERE / "paste"), str(tf)] + (["--send"] if c["auto_send"] else []) + ["--files"] + [str(i) for i in images]
@@ -457,13 +514,26 @@ class StreamASR:
     def __init__(self, chunks, c):
         self.chunks, self.c, self.done, self.results = Path(chunks), c, set(), {}
         env = dict(os.environ, VTC_WHISPER_LANGUAGE=c.get("language") or "")
-        if c.get("asr_engine", "whisper") == "deepgram" and (HERE / "asr_deepgram.py").exists():
-            wcmd = ["uv", "run", "-q", "python", str(HERE / "asr_deepgram.py")]
-        else:
-            wcmd = ["uv", "run", "-q", "--with", "mlx-whisper", "python", str(HERE / "asr_worker.py")]
-        self.worker = subprocess.Popen(wcmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(STATE_DIR / "asr.log", "a"), text=True, env=env)
+        key = (c.get("deepgram_api_key") or os.environ.get("DEEPGRAM_API_KEY") or "").strip()
+        eng = c.get("asr_engine", "auto")
+        self.engine = "deepgram" if (eng == "deepgram" or (eng == "auto" and key)) and (HERE / "asr_deepgram.py").exists() else "whisper"
+        if key: env["DEEPGRAM_API_KEY"] = key
+        self.env = env
+        self.worker = self._spawn(self.engine)
+        self.backup = None                      # local Whisper, started only if Deepgram fails on a chunk (no network, bad key…)
         self.pending = 0
+        print(f"  asr: {self.engine}", flush=True)
         self.voiced_chunks = 0; self.thin_run = 0; self.muffled_warned = False
+    WORKERS = {"deepgram": ["uv", "run", "-q", "python", "asr_deepgram.py"],
+               "whisper": ["uv", "run", "-q", "--with", "mlx-whisper", "python", "asr_worker.py"]}
+
+    def _spawn(self, engine):
+        cmd = list(self.WORKERS[engine]); cmd[-1] = str(HERE / cmd[-1])
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(STATE_DIR / "asr.log", "a"), text=True, env=self.env)
+
+    def _send(self, worker, path):
+        worker.stdin.write(str(path) + "\n"); worker.stdin.flush()
+
     def _finished_chunks(self, final=False):
         files = sorted(self.chunks.glob("*.wav"))
         return files if final else files[:-1]            # the newest chunk is still being written
@@ -533,23 +603,43 @@ class StreamASR:
                 if self.chunk_rms_db(f) < self.SILENCE_RMS_DB:
                     self.results[f] = []; continue
                 self.live_check(f)
-                self.worker.stdin.write(str(f) + "\n"); self.worker.stdin.flush(); self.pending += 1
+                self._send(self.worker, f); self.pending += 1
         self._drain(block=False)
     def _drain(self, block):
         import select
         while self.pending:
-            if not block and not select.select([self.worker.stdout], [], [], 0)[0]: return
-            line = self.worker.stdout.readline()
-            if not line: return
+            outs = [w.stdout for w in (self.worker, self.backup) if w is not None and w.poll() is None]
+            if not outs: return
+            ready, _, _ = select.select(outs, [], [], None if block else 0)
+            if not ready: return
+            line = ready[0].readline()
+            if not line:
+                if self.engine == "deepgram" and self.worker.poll() is not None and self.backup is None:
+                    print("  asr: deepgram worker died → local Whisper", flush=True); self.backup = self._spawn("whisper")
+                    for f in self.done:
+                        if f not in self.results: self._send(self.backup, f)
+                    continue
+                return
             try: j = json.loads(line)
             except Exception: continue
-            if "ready" in j: continue
+            if "ready" in j:
+                if j["ready"] is False and self.engine == "deepgram" and self.backup is None:
+                    print("  asr: deepgram unavailable → local Whisper", flush=True); self.backup = self._spawn("whisper")
+                    for f in self.done:
+                        if f not in self.results: self._send(self.backup, f)
+                continue
+            if j.get("error") and "path" in j and self.engine == "deepgram" and ready[0] is self.worker.stdout:
+                print(f"  asr: deepgram failed on {Path(j['path']).name}: {j['error'][:80]} → local Whisper", flush=True)
+                if self.backup is None: self.backup = self._spawn("whisper")
+                self._send(self.backup, j["path"]); continue
             self.results[Path(j["path"])] = j.get("segments", []); self.pending -= 1
     def finish(self):
         time.sleep(0.3); self.poll(final=True); self._drain(block=True)
-        try: self.worker.stdin.close(); self.worker.wait(timeout=5)
-        except Exception: self.worker.kill()
-        lines = []; words = 0; lps = []
+        for w in (self.worker, self.backup):
+            if w is None: continue
+            try: w.stdin.close(); w.wait(timeout=5)
+            except Exception: w.kill()
+        lines = []; words = 0; lps = []; self.segments = []
         for i, f in enumerate(sorted(self.chunks.glob("*.wav"))):
             base = i * self.c["chunk_seconds"] + getattr(self, "offset", 0.0)
             segs = [sg for sg in self.results.get(f, []) if self.plausible(sg)]
@@ -560,6 +650,8 @@ class StreamASR:
             for sgm in segs:
                 t = max(0.0, base + sgm["start"]); lines.append(f"[{int(t) // 60:02d}:{int(t) % 60:02d}] {sgm['text']}")
                 words += len(sgm["text"].split()); lps.append(sgm.get("lp", -1.0))
+                self.segments.append({"start": t, "end": max(0.0, base + sgm["end"]), "text": sgm["text"].strip(),
+                                      "words": [{"w": w["w"], "s": max(0.0, base + w["s"]), "e": max(0.0, base + w["e"])} for w in sgm.get("words", [])]})
         self.quality = {"words": words, "lp": (sum(lps) / len(lps)) if lps else None}
         shutil.rmtree(self.chunks, ignore_errors=True)
         return "\n".join(lines)
@@ -634,7 +726,7 @@ def pointer_moments(c, video, workdir):
         else: events.append(e)
     if not screen or not events: return [], []
     st = read_state() or {}
-    start_epoch = st.get("started") or screen["t"]
+    start_epoch = st.get("video_start") or st.get("started") or screen["t"]
     probe_r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
                               "-of", "csv=p=0", str(video)], capture_output=True, text=True)
     try: vw, vh = (int(x) for x in probe_r.stdout.strip().split(","))
@@ -642,6 +734,20 @@ def pointer_moments(c, video, workdir):
     moments = detect_moments(events, start_epoch, c["pointer_moments"])
     if not moments: return [], []
     pdir = workdir / "pointer"; pdir.mkdir(exist_ok=True)
+    if c.get("prompt_style", "plain") == "plain":
+        # one full-frame screenshot per moment (cursor boxed in red), numbered in spoken order: these are the [n] in the prompt
+        keep = moments
+        if len(keep) > c["paste_max_images"]:
+            step = len(keep) / c["paste_max_images"]; keep = [keep[int(k * step)] for k in range(c["paste_max_images"])]
+        shots = []
+        for i, m in enumerate(keep):
+            px = m["x"] / screen["w"] * vw; py = (screen["h"] - m["y"]) / screen["h"] * vh
+            out = pdir / f"shot_{i + 1:02d}.jpg"
+            r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(m['t'] - 0.1, 0):.2f}", "-i", str(video),
+                                "-frames:v", "1", "-vf", f"drawbox=x={int(px) - 30}:y={int(py) - 30}:w=60:h=60:color=red@0.9:t=5,scale=1600:-2",
+                                "-q:v", "3", str(out)], capture_output=True, text=True)
+            if r.returncode == 0 and out.exists(): shots.append(out); m["shot"] = str(out)
+        return shots, [m for m in keep if "shot" in m]
     crop_w, crop_h = min(960, vw), min(600, vh)
     rows = []
     for i, m in enumerate(moments):
@@ -665,6 +771,7 @@ def pointer_moments(c, video, workdir):
 # -------------------------------------------------------------------- main ---
 if __name__ == "__main__":
     c = cfg()
+    if os.environ.get("VTC_DELIVER"): c["deliver"] = os.environ["VTC_DELIVER"]
     cmd = sys.argv[1] if len(sys.argv) > 1 else "toggle"
     if cmd == "_run": cmd_run(c, sys.argv[2])
     elif cmd == "finish": finish(c, Path(sys.argv[2]).expanduser().resolve())

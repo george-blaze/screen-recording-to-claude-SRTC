@@ -118,6 +118,13 @@ Look at the menu bar. "hotkey blocked: password field" means an app holds macOS 
 password field, often a browser), which disables every global hotkey on the system; click out of it. If the circle is
 orange, the Accessibility grant was lost: see <a href="docs/troubleshooting.md">troubleshooting</a>.</details>
 
+<details><summary>What exactly lands in the chat?</summary>
+
+Just your words, in the order you said them, with <code>[1]</code>, <code>[2]</code>… placed right after the word you were
+saying when you pointed at, circled or clicked something, and one screenshot per marker attached in that order (full
+frame, cursor boxed in red). Nothing else. The full timestamped digest stays on disk next to the recording.
+</details>
+
 <details><summary>Can I check the mic before a 10-minute take?</summary>
 
 Menu bar ○ → <b>Test microphone (5 s)</b>. Talk normally; you get a notification with the mic, its clarity and level,

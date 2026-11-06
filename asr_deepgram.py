@@ -27,8 +27,10 @@ def lp_of(conf):
     except Exception: return -0.5
 
 
-def segment(start, end, text, conf):
-    return {"start": round(float(start), 3), "end": round(float(end), 3), "text": text.strip(), "nsp": 0.0, "lp": lp_of(conf), "cr": 1.0}
+def segment(start, end, text, conf, words=None):
+    ws = [{"w": (w.get("punctuated_word") or w.get("word") or "").strip(), "s": round(float(w.get("start", 0)), 3), "e": round(float(w.get("end", 0)), 3)}
+          for w in (words or []) if (w.get("punctuated_word") or w.get("word") or "").strip()]
+    return {"start": round(float(start), 3), "end": round(float(end), 3), "text": text.strip(), "nsp": 0.0, "lp": lp_of(conf), "cr": 1.0, "words": ws}
 
 
 def words_to_segments(words, max_span=8.0):
@@ -44,7 +46,7 @@ def words_to_segments(words, max_span=8.0):
     for g in segs:
         text = " ".join((w.get("punctuated_word") or w.get("word") or "") for w in g).strip()
         confs = [w["confidence"] for w in g if w.get("confidence") is not None]
-        if text: out.append(segment(g[0].get("start", 0), g[-1].get("end", 0), text, sum(confs) / len(confs) if confs else None))
+        if text: out.append(segment(g[0].get("start", 0), g[-1].get("end", 0), text, sum(confs) / len(confs) if confs else None, g))
     return out
 
 
@@ -58,7 +60,7 @@ def transcribe(path, key):
         res = json.loads(r.read().decode("utf-8")).get("results", {})
     utts = res.get("utterances") or []
     if utts:
-        return [segment(u.get("start", 0), u.get("end", 0), u.get("transcript", ""), u.get("confidence")) for u in utts if u.get("transcript", "").strip()]
+        return [segment(u.get("start", 0), u.get("end", 0), u.get("transcript", ""), u.get("confidence"), u.get("words")) for u in utts if u.get("transcript", "").strip()]
     alt = ((res.get("channels") or [{}])[0].get("alternatives") or [{}])[0]
     if not alt.get("transcript", "").strip(): return []
     if alt.get("words"): return words_to_segments(alt["words"])

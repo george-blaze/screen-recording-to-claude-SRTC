@@ -15,7 +15,9 @@ everything else is read at the start of each take.
 | `warn_sound` | `""` | Path to any audio file for the countdown. Empty uses `sounds/countdown.aiff` (Sosumi looped for 20 s). |
 | `fps` | `5` | Recording frame rate. 5 keeps files small; the digest samples at 1 fps anyway. |
 | `width` | `1920` | Recording width in pixels (height follows the display's aspect ratio). |
-| `asr_engine` | `"whisper"` | New. `"whisper"`: local mlx-whisper (asr_worker.py), no network. `"deepgram"`: Deepgram nova-3 cloud (what VoiceOS dictation uses; far more forgiving of distant or muffled audio). Needs `"deepgram_api_key": "..."` in this file (or `DEEPGRAM_API_KEY` in the agent's environment). Same 20-s chunk protocol, see `asr_deepgram.py`. |
+| `asr_engine` | `"auto"` | `"auto"`: Deepgram nova-3 (the cloud recognizer VoiceOS uses; far more forgiving of distant or muffled audio, word-timed) whenever `deepgram_api_key` is set, else local mlx-whisper. `"deepgram"` / `"whisper"` force one. If Deepgram fails on a chunk (no network, bad key) that chunk goes to local Whisper automatically. |
+| `deepgram_api_key` | `""` | Your key from https://console.deepgram.com (free starting credit). The LaunchAgent does not see your shell, so put it here rather than only in `DEEPGRAM_API_KEY`. |
+| `prompt_style` | `"plain"` | `"plain"`: the chat receives only your words, in order, with `[n]` right after the word you were saying when you pointed, circled or clicked, and screenshot n attached (full frame, cursor boxed in red). No header, no warnings, no digest text; DIGEST.md on disk still has everything. `"full"`: the earlier header + tiled sheets format. |
 | `asr` | `"stream"` | `stream`: Whisper transcribes 20-s chunks while you record. `mlx`: Whisper after the take. `auto`: Apple on-device engine (fast, weaker on accents). `none`. |
 | `chunk_seconds` | `20` | Chunk length for streaming transcription. |
 | `deliver` | `"paste"` | `paste`: into the Claude chat in front of you. `deeplink`: a new Code session with the files attached (`claude://code/new`). `clipboard`: prompt on the clipboard only. |
