@@ -161,6 +161,36 @@ func showFinished() {
 func attributed(_ text: String, _ color: NSColor) -> NSAttributedString {
     NSAttributedString(string: text, attributes: [.foregroundColor: color, .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)])
 }
+// ---------------- live mic meter (menu bar, while recording) ----------------
+// miccap rewrites level.txt ~10×/s; the last ~1 s scrolls through as bars so you can see the mic is hearing you.
+let levelFile = stateDir.appendingPathComponent("level.txt")
+var meter = [Double](repeating: 0, count: 10)
+var meterTimer: Timer? = nil
+var silentSince: Date? = nil
+var recTitle = ""                                        // "● 0:12" / "⚠ 9 s", set by refresh(); the meter appends the bars
+func readLevel() -> Double? {
+    guard let a = try? FileManager.default.attributesOfItem(atPath: levelFile.path), let m = a[.modificationDate] as? Date,
+          Date().timeIntervalSince(m) < 1.5,                       // stale file = the mic process is gone
+          let s = try? String(contentsOf: levelFile, encoding: .utf8), let v = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+    return v
+}
+func drawMeter() {
+    let lv = readLevel()
+    meter.removeFirst(); meter.append(lv ?? 0)
+    if (lv ?? 0) > 0.06 { silentSince = nil } else if silentSince == nil { silentSince = Date() }
+    let blocks = Array("▁▂▃▄▅▆▇█")
+    let bars = String(meter.map { blocks[min(7, Int($0 * 7.99))] })
+    let dead = lv == nil || (silentSince.map { Date().timeIntervalSince($0) > 4 } ?? false)
+    let text = recTitle + " " + bars + (dead ? (lv == nil ? " no mic" : " silent") : "")
+    item.button?.attributedTitle = attributed(text, dead ? .systemOrange : .systemRed)
+}
+func setMeter(on: Bool) {
+    if on && meterTimer == nil {
+        meter = [Double](repeating: 0, count: 10); silentSince = nil
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in drawMeter() }
+    } else if !on, let t = meterTimer { t.invalidate(); meterTimer = nil }
+}
+
 var lastPhase = ""
 func refresh() {
     let st = readState()
@@ -171,16 +201,19 @@ func refresh() {
         let el = max(0, now - st.started); let left = st.cap - el
         let mm = Int(el) / 60, ss = Int(el) % 60
         if left <= st.warn {
-            item.button?.attributedTitle = attributed(String(format: "⚠ %d s", Int(left.rounded())), .systemRed)
+            recTitle = String(format: "⚠ %d s", Int(left.rounded()))
             showPanel(String(format: "%d", Int(left.rounded())), "seconds left · hotkey to stop", red)
         } else {
-            item.button?.attributedTitle = attributed(String(format: "● %d:%02d", mm, ss), .systemRed); if !toast { hidePanel() }
+            recTitle = String(format: "● %d:%02d", mm, ss); if !toast { hidePanel() }
         }
+        setMeter(on: true); drawMeter()
         toggleItem.title = "Stop recording"; cancelItem.isHidden = false; micTestItem.isEnabled = false
     } else if let st = st, st.phase == "processing" {
+        setMeter(on: false)
         item.button?.attributedTitle = attributed("⟳ processing", .labelColor); if !toast { hidePanel() }
         toggleItem.title = "Start recording"; cancelItem.isHidden = true; micTestItem.isEnabled = !micTesting
     } else {
+        setMeter(on: false)
         item.button?.attributedTitle = attributed(micTesting ? "◌ mic test" : "○", .labelColor); if !toast { hidePanel() }
         toggleItem.title = "Start recording"; cancelItem.isHidden = true; micTestItem.isEnabled = !micTesting
     }
@@ -206,7 +239,11 @@ func checkRecording(force: Bool = false) {
         recording = true
         let scr = NSScreen.screens.first?.frame ?? .zero
         let scale = NSScreen.screens.first?.backingScaleFactor ?? 2
-        let header = "{\"k\":\"screen\",\"w\":\(Int(scr.width)),\"h\":\(Int(scr.height)),\"scale\":\(scale),\"t\":\(Date().timeIntervalSince1970)}\n"
+        // every display's frame (global points, origin bottom-left), in the order avfoundation lists "Capture screen N"
+        let screens = NSScreen.screens.map { s in
+            "{\"x\":\(Int(s.frame.origin.x)),\"y\":\(Int(s.frame.origin.y)),\"w\":\(Int(s.frame.width)),\"h\":\(Int(s.frame.height)),\"scale\":\(s.backingScaleFactor)}"
+        }.joined(separator: ",")
+        let header = "{\"k\":\"screen\",\"w\":\(Int(scr.width)),\"h\":\(Int(scr.height)),\"scale\":\(scale),\"screens\":[\(screens)],\"t\":\(Date().timeIntervalSince1970)}\n"
         try? header.write(to: eventsFile, atomically: true, encoding: .utf8)
         handle = try? FileHandle(forWritingTo: eventsFile); handle?.seekToEndOfFile()
     } else if !isRec && recording {

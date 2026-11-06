@@ -28,8 +28,10 @@ in **[docs/installation.md](docs/installation.md)**.
 ### Record a take
 
 1. Open the Claude chat you want the request in (or a new one).
-2. **⌃⌘S** → a tink and a "Recording" notification; the menu bar shows `● 0:12` counting up.
-3. Talk, point, circle, click. Mouse and keyboard work normally; nothing is blocked.
+2. **⌃⌘S** → 3-2-1, a chime; the menu bar shows `● 0:12 ▁▃▅▇▅▂` counting up, the bars bouncing with your voice
+   (orange "silent" / "no mic" if nothing is being heard).
+3. Talk, point, circle, click. Mouse and keyboard work normally; nothing is blocked. Other displays are recorded too
+   (low rate), so pointing at something on the laptop screen still gets its screenshot.
 4. **⌃⌘S** again (Esc discards). Claude comes to the front, the images and the prompt land in the composer.
 5. Enter.
 
@@ -122,7 +124,8 @@ orange, the Accessibility grant was lost: see <a href="docs/troubleshooting.md">
 
 Just your words, in the order you said them, with <code>[1]</code>, <code>[2]</code>… placed right after the word you were
 saying when you pointed at, circled or clicked something, and one screenshot per marker attached in that order (full
-frame, cursor boxed in red). Nothing else. The full timestamped digest stays on disk next to the recording.
+frame of whichever display the cursor was on, cursor boxed in red). Nothing else. The full timestamped digest stays on
+disk next to the recording.
 </details>
 
 <details><summary>Can I check the mic before a 10-minute take?</summary>

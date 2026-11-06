@@ -101,11 +101,22 @@ guard let conv = AVAudioConverter(from: monoFmt, to: outFmt) else { log("no conv
 let out = FileHandle.standardOutput
 let writeQ = DispatchQueue(label: "miccap.write")     // never block CoreAudio's render thread on the pipe
 var written = 0
+// live level for the menu-bar meter: 0…1 (−50 dBFS … −10 dBFS), rewritten ~10×/s while the mic runs
+let levelFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/VideoToClaude/level.txt")
+var lastLevelWrite = Date.distantPast
 input.installTap(onBus: 0, bufferSize: 4800, format: inFmt) { buf, _ in
     guard let src = buf.floatChannelData, buf.frameLength > 0,
           let mono = AVAudioPCMBuffer(pcmFormat: monoFmt, frameCapacity: buf.frameLength) else { return }
     mono.frameLength = buf.frameLength
     mono.floatChannelData![0].update(from: src[0], count: Int(buf.frameLength))   // processed voice is channel 0
+    if Date().timeIntervalSince(lastLevelWrite) >= 0.08 {
+        lastLevelWrite = Date()
+        var sum: Float = 0; let n = Int(buf.frameLength)
+        for i in 0..<n { let v = src[0][i]; sum += v * v }
+        let db = 20 * log10(max(sqrt(sum / Float(n)), 1e-6))
+        let level = min(max((db + 50) / 40, 0), 1)
+        writeQ.async { try? String(format: "%.3f\n", level).data(using: .utf8)!.write(to: levelFile, options: .atomic) }
+    }
     let cap = AVAudioFrameCount(Double(buf.frameLength) * 48000.0 / inFmt.sampleRate) + 32
     guard let ob = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else { return }
     var fed = false; var err: NSError? = nil
@@ -137,6 +148,7 @@ while running {
 }
 engine.stop(); input.removeTap(onBus: 0)
 writeQ.sync {}
+try? FileManager.default.removeItem(at: levelFile)
 try? out.close()
 cleanup()
 log("miccap: wrote \(written / 96000) s")
