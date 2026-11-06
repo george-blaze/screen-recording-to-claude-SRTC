@@ -25,6 +25,7 @@ below runs from there. The tool is `python3 "$SKILL_DIR/vtc.py"`; the digest eng
 | status / is it recording | `python3 "$SKILL_DIR/vtc.py" status` |
 | digest an existing recording (any .mov/.mp4) | `python3 "$SKILL_DIR/screencast/screencast.py" digest "<file>"` → then `Read` the printed `DIGEST.md`, then each sheet in `sheets/` and `pointer/` |
 | storage usage | `python3 "$SKILL_DIR/vtc.py" usage` |
+| test the mic (5 s: mic, clarity, level, or the muffled/clipping/quiet warning) | `python3 "$SKILL_DIR/vtc.py" mictest` (needs the hotkey agent's permissions: prefer the menu bar item "Test microphone (5 s)") |
 | clean old takes / clean everything | `python3 "$SKILL_DIR/vtc.py" clean` / `python3 "$SKILL_DIR/vtc.py" clean --all` |
 | change hotkey / mic / cap / retention | edit `~/.config/vtc.json` (keys: `hotkey`, `mic`, `cap_seconds`, `warn_seconds`, `keep_days`, `deliver`, `auto_send`, `asr`), then `launchctl kickstart -k gui/$(id -u)/com.srtc.hotkey` |
 | install / reinstall | `"$SKILL_DIR/install.sh"` (the user must run it: it registers a login agent and a keychain certificate) |
