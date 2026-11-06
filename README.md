@@ -85,7 +85,7 @@ and leaves your `~/.config/vtc.json` alone.
 |---|---|---|
 | Hotkey toggle | ⌃⌘S start/stop, Esc cancel, configurable combo, no key blocking | `vtc-hotkey.swift` |
 | Menu bar | ○ idle · ● elapsed · ⚠ last 20 s · ⟳ processing · warns when a password field blocks hotkeys | `vtc-hotkey.swift` |
-| Capture | screen + mic with separate ffmpeg inputs (shared input drops ~75 % of mic audio), hardware H.264, 10-min cap | `vtc.py` |
+| Capture | screen + mic with separate ffmpeg inputs (shared input drops ~75 % of mic audio), hardware H.264, 10-min cap; mic auto-picked (headphones first), quiet/clipping warnings | `vtc.py`, `audio-input.swift` |
 | Live transcription | Whisper large-v3-turbo on Apple silicon, 20-s chunks while you talk, silence gate, hallucination filter | `asr_worker.py`, `vtc.py` |
 | Digest | 1 fps sampling, change detection that ignores the cursor, 2×2 sheets with burned-in mm:ss | `screencast/` |
 | Pointer moments | circling, resting after moving, clicks → zoomed shots with a red cursor box | `vtc.py` |
@@ -118,9 +118,13 @@ Look at the menu bar. "hotkey blocked: password field" means an app holds macOS 
 password field, often a browser), which disables every global hotkey on the system; click out of it. If the circle is
 orange, the Accessibility grant was lost: see <a href="docs/troubleshooting.md">troubleshooting</a>.</details>
 
-<details><summary>Can I use my AirPods?</summary>
-Yes. Make <code>mic</code> a priority list, e.g. <code>["AirPods Pro", "ME6S", "MacBook Pro Microphone"]</code>; the
-first device that is actually connected at record time wins.</details>
+<details><summary>Which microphone does it use?</summary>
+By default (<code>"mic": "auto"</code>) the mic closest to your mouth: any connected headphones or headset, wired or
+wireless (AirPods, Beats, Jabra, Bose, Sony, …), otherwise whatever System Settings → Sound → Input is set to. Every
+digest names the mic it used, and the prompt carries a warning if the take was too quiet (wrong mic, too far) or
+clipping (input volume too high). Prefer a fixed order? <code>"mic": ["AirPods Pro", "MacBook Pro Microphone"]</code>
+uses the first one connected. <code>audio-input list|get|set &lt;name&gt;</code> (built by the installer) shows or switches
+the system input from the terminal.</details>
 
 <details><summary>Does Claude have this natively?</summary>
 The Claude desktop app contains a "Record your screen" mode (Cowork tab) that attaches a screen + voice recording to the

@@ -79,11 +79,21 @@ def _norm(s):
     return s.lower().replace("\u2019", "'")   # curly vs straight apostrophe ("Dorde’s AirPods")
 
 
+LAST_MIC_NAME = None
+HEADPHONE_HINTS = ["airpods", "headphone", "headset", "earbud", "buds", "beats", "jabra", "bose", "sony wh", "sony wf", "pods", "plantronics", "poly ", "logitech zone", "steelseries", "hyperx"]
+
+
 def resolve_inputs(screen, mic):
     video, audio = list_devices()
     vidx = next((i for i, n in video.items() if n == f"Capture screen {screen}"), None)
     if vidx is None: die(f"no 'Capture screen {screen}'; run: screencast.py devices")
-    if mic in (None, "", "none"): return f"{vidx}:none", False
+    global LAST_MIC_NAME
+    if mic in (None, "", "none"): LAST_MIC_NAME = None; return f"{vidx}:none", False
+    if mic in ("auto", None) or mic == "auto":
+        # headphones/headset first (wired or wireless) — the mic nearest the mouth — else the system's input
+        hp = next((n for n in audio.values() if any(h in _norm(n) for h in HEADPHONE_HINTS)), None)
+        mic = hp or default_input_name() or "MacBook Pro Microphone"
+        print(f"  mic: auto → {mic}" + (" (headphones)" if hp else " (system input)"), flush=True)
     if isinstance(mic, (list, tuple)):
         # priority list: first device that is present right now wins (AirPods appear only while connected)
         chosen = None
@@ -100,6 +110,7 @@ def resolve_inputs(screen, mic):
     aidx = next((i for i, n in audio.items() if _norm(n) == _norm(mic)), None)
     if aidx is None: aidx = next((i for i, n in audio.items() if _norm(mic) in _norm(n)), None)
     if aidx is None: die(f"no microphone matching {mic!r}; run: screencast.py devices")
+    LAST_MIC_NAME = audio[aidx]
     return f"{vidx}:{aidx}", True
 
 
@@ -212,18 +223,25 @@ def measure_peak_db(media):
     return float(m.group(1)) if m else None
 
 
-def quiet_audio_note(peak_db):
-    """Warning text when the recording holds little or no speech, else ''."""
+HOT_PEAK_DB = -1.0      # at or above this the input is clipping
+
+
+def quiet_audio_note(peak_db, mic=None):
+    """Warning text when the recording is too quiet or clipping, else ''."""
     mean = LAST_MEAN_DB
+    who = f"'{mic}'" if mic else "the microphone"
+    if peak_db is not None and peak_db >= HOT_PEAK_DB and (mean is None or mean > QUIET_MEAN_DB):
+        return (f"audio is clipping (peak {peak_db:.0f} dB on {who}): lower that input's volume in System Settings → Sound → Input "
+                f"until the meter stays around two-thirds while you talk. Loud syllables may be garbled.")
     quiet_peak = peak_db is not None and peak_db <= QUIET_PEAK_DB
     quiet_mean = mean is not None and mean <= QUIET_MEAN_DB
     if not (quiet_peak or quiet_mean): return ""
     lvl = f"peak {peak_db:.0f} dB" + (f", average {mean:.0f} dB" if mean is not None else "")
-    return (f"audio was very quiet ({lvl}): the microphone was probably not the one being spoken into "
+    return (f"audio was very quiet ({lvl} on {who}): that microphone was probably not the one being spoken into "
             f"(AirPods not connected to this Mac, or far from the mouth), so the transcript may be empty or garbled. "
             f"Check `mic` in ~/.config/vtc.json (\"default\" follows System Settings → Sound → Input). "
             f"Treat the words above as unreliable and rely on the frames and pointer sheets.")
-def finish(workdir, a, source, duration=None, asr=None, audio_peak_db=None):
+def finish(workdir, a, source, duration=None, asr=None, audio_peak_db=None, mic=None):
     """raw frames + small.raw (+ audio.wav) → kept frames → sheets → DIGEST.md"""
     t_all = time.time(); timings = {}
     workdir = Path(workdir); raw, frames, sheets = workdir / "raw", workdir / "frames", workdir / "sheets"
@@ -270,8 +288,9 @@ def finish(workdir, a, source, duration=None, asr=None, audio_peak_db=None):
     for i, sf in enumerate(sheet_files):
         chunk = stamps[i * per:(i + 1) * per]
         lines.append(f"- `{sf}` — {hms(chunk[0])} → {hms(chunk[-1])}  (tiles: {', '.join(hms(s) for s in chunk)})")
-    note = quiet_audio_note(audio_peak_db)
-    if audio_peak_db is not None: lines.insert(4, f"- audio peak: {audio_peak_db:.0f} dB" + (f"  ⚠ {note}" if note else ""))
+    mic = mic or LAST_MIC_NAME
+    note = quiet_audio_note(audio_peak_db, mic)
+    if audio_peak_db is not None: lines.insert(4, f"- mic: {mic or 'unknown'}  |  audio peak: {audio_peak_db:.0f} dB" + (f"  ⚠ {note}" if note else ""))
     lines += ["", "## Transcript", ""] + ([f"⚠ {note}", ""] if note else []) + [transcript or "_(no speech / transcription disabled)_", ""]
     (workdir / "DIGEST.md").write_text("\n".join(lines))
     if note: (workdir / "audio_warning.txt").write_text(note); print(f"  ⚠ {note}")

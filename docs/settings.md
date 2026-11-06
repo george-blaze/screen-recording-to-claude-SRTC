@@ -7,7 +7,7 @@ everything else is read at the start of each take.
 | Key | Default | What it does |
 |---|---|---|
 | `hotkey` | `"ctrl+cmd+s"` | Toggle combination. Modifiers `ctrl`, `cmd`, `alt`, `shift` plus one key (letters, digits, `space`, `f1`–`f12`). |
-| `mic` | `"default"` | `"default"` follows System Settings → Sound → Input. A device name uses that device. A list such as `["AirPods Pro", "ME6S", "MacBook Pro Microphone"]` uses the first one that is connected when the take starts. `"none"` records video only. |
+| `mic` | `"auto"` | `"auto"`: a connected headphones/headset mic if there is one (names containing AirPods, Headset, Buds, Beats, Jabra, Bose, Sony WH/WF, …), otherwise the system input (System Settings → Sound → Input). `"default"`: always the system input. A device name uses that device. A list such as `["AirPods Pro", "MacBook Pro Microphone"]` uses the first one connected when the take starts. `"none"` records video only. The digest names the mic used and warns when the audio is too quiet (average below −40 dB) or clipping (peak at 0 dB). |
 | `screen` | `0` | Which display to capture (`screencast.py devices` lists them). |
 | `cap_seconds` | `600` | Hard stop; the take is delivered automatically when reached. |
 | `warn_seconds` | `20` | Countdown length before the cap: sound, notification, red panel. |

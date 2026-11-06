@@ -1,6 +1,7 @@
 # built helpers (install.sh compiles them)
 vtc-hotkey
 paste
+audio-input
 screencast/transcribe
 screencast/sheet
 *.new

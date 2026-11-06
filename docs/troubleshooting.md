@@ -40,7 +40,10 @@ The prompt and `DIGEST.md` carry an **audio peak / average** line. Speech into a
 device selected); the prompt then tells Claude to rely on the frames. Fix `mic` in the config (see settings) and look
 at the input level meter in System Settings → Sound → Input while you talk.
 
-Peak at 0 dB means clipping: lower the input volume of that device in the same pane.
+Peak at 0 dB means clipping (the prompt says so): lower the input volume of that device in the same pane.
+The digest's `mic:` line names the device that was used. `./audio-input list` shows the system's inputs with the current
+default marked, `./audio-input set "MacBook Pro Microphone"` switches it; apps with voice processing (Slack, Zoom, FaceTime)
+can change the hardware gain of the input during a call, so check the level meter afterwards.
 
 If levels are fine but the transcript is still poor, you are probably on the Apple fallback engine: check that
 `models/whisper-large-v3-turbo/weights.safetensors` is complete (1,613,977,612 bytes) and `asr` is `"stream"`.

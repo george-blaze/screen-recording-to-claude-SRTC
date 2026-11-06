@@ -24,7 +24,7 @@ DEFAULTS = {
     "folder": str(Path.home()),               # project folder a deeplink-mode session opens in
     "recordings": str(Path.home() / "Movies" / "SRTC"),
     "screen": 0,
-    "mic": "default",                         # system default input (AirPods when connected); or a name from: python3 screencast/screencast.py devices
+    "mic": "auto",                            # auto = headphones/headset if connected, else the system input; or a name, a priority list, or "none"
     "cap_seconds": 600,                       # 10 min, same as Claude's native recorder
     "warn_seconds": 20,                       # sound + notification this long before the cap
     "fps": 5, "width": 1920,
@@ -120,7 +120,8 @@ def cmd_run(c, out):
     def launch(b):
         cmd = ffmpeg_cmd(c, out) if b == "ffmpeg" else screencapture_cmd(c, out)
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-{b}.log", "w"))
-        STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "backend": b, "phase": "recording",
+        import screencast as _sc
+        STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "backend": b, "phase": "recording", "mic": _sc.LAST_MIC_NAME,
                                      "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")), "started": time.time()}))
         return p
     t0 = time.time()
@@ -164,7 +165,7 @@ def cmd_run(c, out):
     notify("SRTC", "Processing…")
     try:
         transcript = stream.finish() if stream else None
-        finish(c, video, transcript=transcript)
+        finish(c, video, transcript=transcript, mic=st.get('mic'))
         prune(c)
     finally:
         STATE.unlink(missing_ok=True)
@@ -245,7 +246,7 @@ def cmd_usage(c):
 
 
 # ----------------------------------------------------------------- deliver ---
-def finish(c, video, transcript=None):
+def finish(c, video, transcript=None, mic=None):
     import argparse
     from screencast import digest
     asr = {"stream": "mlx", "auto": "auto", "mlx": "mlx", "apple": "apple", "none": "none"}[c["asr"]]
@@ -254,6 +255,8 @@ def finish(c, video, transcript=None):
                            jpeg_q=3, asr=asr, keep_raw=False)
     workdir = video.with_name(video.stem + ".digest"); workdir.mkdir(parents=True, exist_ok=True)
     if transcript is not None: (workdir / "transcript.txt").write_text(transcript)
+    import screencast as _sc
+    _sc.LAST_MIC_NAME = mic or _sc.LAST_MIC_NAME
     digest(video, workdir, a)
     transcript = (workdir / "transcript.txt").read_text().strip() if (workdir / "transcript.txt").exists() else ""
     sheets = sorted((workdir / "sheets").glob("sheet_*.jpg"))
@@ -275,7 +278,8 @@ def finish(c, video, transcript=None):
               f"{warn_line}"
               f"Attached: DIGEST.md (full timestamped transcript + sheet index), {len(pointer_sheets)} pointer sheets (zoomed views of what I pointed at, circled or clicked, red box = cursor) and {len(sheets)} sheets of what was on my screen "
               f"while I spoke; each tile is stamped mm:ss and lines up with the transcript. Do what I asked; use the frames to "
-              f"resolve 'this', 'here', 'that'. If the request is unclear, ask one question.")
+              f"resolve 'this', 'here', 'that'. If the request is unclear, ask one question."
+              + (f" (mic: {mic})" if mic else ""))
     subprocess.run(["pbcopy"], input=prompt, text=True)
     if c["deliver"] == "paste":
         from screencast import tool

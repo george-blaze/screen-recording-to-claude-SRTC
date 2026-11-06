@@ -35,7 +35,8 @@ else; the installer then links the skill for you.
 What it does, in order (it prints each step):
 
 1. **Checks prerequisites** and stops with the exact command to run if one is missing.
-2. **Builds the helpers** with `swiftc`: `vtc-hotkey` (menu-bar agent), `paste` (delivers into the composer),
+2. **Builds the helpers** with `swiftc`: `vtc-hotkey` (menu-bar agent), `paste` (delivers into the composer), `audio-input`
+   (lists/sets the system input device),
    `screencast/sheet` (contact sheets), `screencast/transcribe` (Apple on-device fallback). Also generates the
    20-second countdown sound from macOS's Sosumi alert.
 3. **Signs the helpers** with a local certificate named "Video to Claude" that it creates in your login keychain.
@@ -108,9 +109,10 @@ Once the file is complete, every new take uses Whisper automatically (`"asr": "s
 
 Open `~/.config/vtc.json` (menu bar → Settings) and set at least:
 
-- `mic`: a priority list of the microphones you actually use, best first, e.g.
-  `["AirPods Pro", "ME6S", "MacBook Pro Microphone"]`. The first one connected at record time wins.
-  `python3 ~/.claude/skills/srtc/screencast/screencast.py devices` prints the exact names.
+- `mic`: leave `"auto"` (connected headphones first, else the system input) or give a priority list of the mics you
+  actually use, best first, e.g. `["AirPods Pro", "MacBook Pro Microphone"]`; the first one connected at record time wins.
+  `python3 ~/.claude/skills/srtc/screencast/screencast.py devices` prints the exact names. Every take reports which mic
+  it used and warns if it was too quiet or clipping.
 - `hotkey` if ⌃⌘S collides with something (`ctrl+alt+r`, `cmd+shift+f6`, …).
 
 All keys are described in the [settings reference](settings.md). Restart the agent after changing the hotkey:
