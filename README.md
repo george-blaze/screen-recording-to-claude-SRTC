@@ -1,101 +1,146 @@
-# Video to Claude
+# SRTC: Screen Recorder to Claude
 
-Talk and point instead of typing prompts. Press **⌃⌘S**, show something on your screen while you explain it, press
-**⌃⌘S** again, and the Claude chat in front of you fills with your words as the request plus timestamped screenshots
-of what you showed and zoomed shots of what you pointed at, circled or clicked. Press Enter. That's the whole workflow.
+### Talk and point instead of typing prompts. One hotkey records your screen and voice and drops the result into your open Claude chat as the request.
 
-- **Hotkey toggle, not hold** — mouse and keyboard keep working while you record.
-- **Live transcription** — Whisper large-v3-turbo runs locally and transcribes 20-second chunks while you talk; the
-  transcript is ready a couple of seconds after you stop. Nothing leaves your Mac.
-- **Pointer moments** — circling, resting the cursor on something after moving there, and clicks become zoomed
-  screenshots with a red box on the cursor, stamped mm:ss, delivered first.
-- **Into the open chat** — delivery pastes into whatever Claude chat is in front of you (new session only if you open one).
-- **10-minute cap** with a red countdown panel and a 20-second countdown sound; Esc cancels a take.
-- **Self-cleaning** — takes older than 7 days are pruned automatically.
-- Also a **Claude Code skill**: `/video-to-claude digest <file>` turns any existing .mov/.mp4 into sheets + transcript.
+Built by **George Blaze** from **[Phase56](https://phase56.com)**.
 
-## Requirements
-macOS 15 or newer on Apple silicon (tested on macOS 27, M3 Max), the Claude desktop app, and:
+[![macOS](https://img.shields.io/badge/macOS-15%2B%20Apple%20silicon-black)](docs/installation.md#requirements) [![Claude Code skill](https://img.shields.io/badge/Claude%20Code-skill-d97757)](SKILL.md) [![Whisper](https://img.shields.io/badge/transcription-local%20Whisper-2ea44f)](docs/installation.md#step-5-whisper-model) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Press **⌃⌘S**, explain something while you show it, press **⌃⌘S** again. Three seconds later the Claude chat in
+front of you contains your spoken words as the prompt, timestamped screenshots of what you showed, and zoomed shots of
+whatever you circled, rested on or clicked. Press Enter.
+
+> **IMPORTANT.** Everything runs on your Mac: ffmpeg for capture, a local Whisper model for transcription, two small
+> Swift helpers for the hotkey and the paste. No audio or video leaves the machine; what you send to Claude is what you
+> see in the composer before you press Enter.
+
+## Quick start
+
 ```bash
-xcode-select --install                 # swiftc (compiles three small helpers)
-brew install ffmpeg uv                 # recorder/digest engine, Python runner for Whisper
-python3 -m pip install numpy           # change detection (Homebrew python3)
+git clone https://github.com/george-blaze/srtc.git ~/.claude/skills/srtc
+~/.claude/skills/srtc/install.sh
 ```
 
-## Install
-```bash
-git clone https://github.com/george-blaze/video-to-claude.git ~/.claude/skills/video-to-claude
-~/.claude/skills/video-to-claude/install.sh
+Then grant the three permissions macOS asks for (Accessibility, Microphone, Screen Recording) to **vtc-hotkey** and
+restart the agent once. The full walkthrough, including what each prompt looks like and how to verify the install, is
+in **[docs/installation.md](docs/installation.md)**.
+
+### Record a take
+
+1. Open the Claude chat you want the request in (or a new one).
+2. **⌃⌘S** → a tink and a "Recording" notification; the menu bar shows `● 0:12` counting up.
+3. Talk, point, circle, click. Mouse and keyboard work normally; nothing is blocked.
+4. **⌃⌘S** again (Esc discards). Claude comes to the front, the images and the prompt land in the composer.
+5. Enter.
+
+### Ask Claude
+
+What lands in the composer looks like this; Claude Code treats the narration as the instruction (a rule the installer
+adds to `~/.claude/CLAUDE.md`):
+
+```text
+Screen recording request (SRTC). My spoken words are the request:
+"Take this card layout and make the export panel on the right match it, same spacing, same header."
+Attached: DIGEST.md, 2 pointer sheets (what I pointed at, circled or clicked, red box = cursor) and 5 sheets of what
+was on my screen while I spoke; every tile is stamped mm:ss and lines up with the transcript.
 ```
-The installer builds the helpers, signs them with a local certificate (so macOS keeps the permissions across rebuilds),
-writes `~/.config/vtc.json`, appends the "narration is the request" rule to `~/.claude/CLAUDE.md`, registers the
-menu-bar agent to run at login, and starts the Whisper model download (1.6 GB, one time; on-device Apple transcription
-is used until it lands).
 
-Then grant three permissions to **vtc-hotkey** in System Settings → Privacy & Security, all requested by the agent on
-first launch: **Accessibility** (hotkey + mouse tracking), **Microphone**, **Screen & System Audio Recording**.
-Screen Recording takes effect after a restart of the agent:
+### Use the terminal
+
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.videotoclaude.hotkey
+python3 ~/.claude/skills/srtc/vtc.py status            # idle / recording / processing
+python3 ~/.claude/skills/srtc/vtc.py usage             # takes on disk
+python3 ~/.claude/skills/srtc/screencast/screencast.py digest ~/Desktop/demo.mov   # any recording → sheets + transcript
 ```
-The menu-bar circle turns from orange to plain ○ when it's armed. Uninstall: `uninstall.sh` (removes the agent and
-the skill link; delete the folder and `~/.config/vtc.json` to remove everything).
 
-## Every time
-| You | It |
-|---|---|
-| ⌃⌘S | tink · "Recording" notification · menu bar `● 0:42` counting up |
-| talk, point, circle, click; use mouse and keyboard normally | mouse logged; Whisper transcribes in the background |
-| ⌃⌘S again (or Esc to discard) | ~3 s later Claude comes to the front, images then the prompt land in the composer |
-| Enter | Claude acts on what you said, resolving "this/here" from the frames |
+Inside Claude Code the same things are one slash command away: `/srtc digest ~/Desktop/demo.mov`,
+`/srtc clean`, `/srtc status`.
 
-At 9:40 a red countdown appears top-right with a 20-second alert loop; at 10:00 the take stops and delivers by itself.
-Menu bar: ○ idle · ● recording · ⚠ last 20 s · ⟳ processing · "hotkey blocked: password field" when a focused password
-field somewhere (macOS secure input) is swallowing all global hotkeys — click out of it.
+### Update
 
-## Settings — `~/.config/vtc.json`
-| Key | Default | Meaning |
-|---|---|---|
-| `hotkey` | `ctrl+cmd+s` | modifiers + key; restart the agent after changing |
-| `mic` | `default` | system input; or a device name; or a priority list `["AirPods Pro", "ME6S", "MacBook Pro Microphone"]` → first one connected wins; `none` |
-| `asr` | `stream` | Whisper while recording · `mlx` after · `auto` Apple on-device · `none` |
-| `deliver` | `paste` | into the open chat · `deeplink` new Code session with files attached · `clipboard` |
-| `auto_send` | `false` | press Return after pasting |
-| `cap_seconds` / `warn_seconds` | 600 / 20 | take limit and countdown length |
-| `warn_sound` | `""` | any audio file for the countdown (default `sounds/countdown.aiff`) |
-| `keep_days` / `keep_last` | 7 / 30 | retention (0 days = keep forever) |
-| `grid` | `2x2` | tiles per sheet; `1x1` for dense code |
-| `recordings` | `~/Movies/Video to Claude` | where takes and digests live |
-`python3 screencast/screencast.py devices` lists screens and microphones.
-
-## What Claude receives
-1. **Pointer sheets** — zoomed views of each moment you circled, rested on, or clicked (red box = cursor), stamped mm:ss.
-2. **Overview sheets** — every second the screen changed, 2×2 tiles, stamped mm:ss.
-3. **The prompt** — your transcript as the request, plus the path of `DIGEST.md` (full transcript + sheet index).
-Claude Code reads the rule in `~/.claude/CLAUDE.md` and treats the narration as the instruction.
-
-## Command line
 ```bash
-python3 vtc.py status | start | stop | cancel | usage | clean [--days N | --all]
-python3 screencast/screencast.py digest <video.mov|mp4>     # digest any recording: sheets + transcript
-python3 screencast/screencast.py record --mic default        # record without the hotkey
+cd ~/.claude/skills/srtc && git pull && ./install.sh
 ```
+
+The installer is idempotent: it rebuilds only what changed, re-signs the helpers so your permission grants survive,
+and leaves your `~/.config/vtc.json` alone.
 
 ## How it works
-`vtc-hotkey` (Swift, menu bar) listens for the hotkey and logs the mouse while recording. `vtc.py` runs ffmpeg with the
-screen and the mic as two separate inputs (one shared input silently drops ~75% of mic buffers), writes 20-second wav
-chunks that a persistent Whisper worker (`asr_worker.py`, mlx-whisper) transcribes as they close, then `screencast/`
-samples the video at 1 fps, keeps only frames where ≥0.4% of pixels changed (a moving cursor doesn't count), tiles
-them into sheets with burned-in timestamps, detects pointer moments from the mouse log, and `paste` (Swift) brings Claude
-forward and pastes images then text into the composer. Design notes and the reverse-engineering findings behind the
-choices (Claude.app's deep links and native recorder, VoiceOS's mechanics) are in `screencast/BLUEPRINT.md` and
-`screencast/teardown.md`.
 
-## Troubleshooting
-- **Hotkey dead** → menu bar says "password field"? click out of it. Log says "not trusted"? remove and re-add
-  `vtc-hotkey` in Accessibility. Logs: `~/Library/Application Support/VideoToClaude/`.
-- **"Nothing was recorded"** → Screen Recording or Microphone not granted to `vtc-hotkey`; Screen Recording needs the
-  agent restart above.
-- **Empty or garbled transcript** → the digest reports the audio level; an average below −40 dB means the wrong mic was
-  live. Check `mic`, and the input level meter in System Settings → Sound.
-- **Rebuilt a helper and permissions vanished** → run `sign.sh` after every rebuild; it keeps the identity stable.
+```
+ ⌃⌘S ──► vtc-hotkey (menu bar, Swift) ──► vtc.py runner
+            │  logs mouse moves/clicks           │
+            │                                    ├─ ffmpeg: screen (5 fps) + mic as two inputs → .mp4
+            │                                    ├─ 20-s wav chunks → Whisper worker (mlx) → transcript, live
+            │                                    └─ 9:40 countdown sound + red panel · 10:00 auto-stop
+ ⌃⌘S ──► stop ──► digest ───────────────────────► 1 fps → changed frames only → 2×2 timestamped sheets
+                                                  mouse log → circle / dwell / click → zoomed pointer sheets
+                                                  DIGEST.md (transcript + index) · quiet-audio check
+                  deliver ──────────────────────► paste (Swift): Claude to front, images then prompt into the composer
+```
+
+## What you get
+
+| Piece | What it does | Where |
+|---|---|---|
+| Hotkey toggle | ⌃⌘S start/stop, Esc cancel, configurable combo, no key blocking | `vtc-hotkey.swift` |
+| Menu bar | ○ idle · ● elapsed · ⚠ last 20 s · ⟳ processing · warns when a password field blocks hotkeys | `vtc-hotkey.swift` |
+| Capture | screen + mic with separate ffmpeg inputs (shared input drops ~75 % of mic audio), hardware H.264, 10-min cap | `vtc.py` |
+| Live transcription | Whisper large-v3-turbo on Apple silicon, 20-s chunks while you talk, silence gate, hallucination filter | `asr_worker.py`, `vtc.py` |
+| Digest | 1 fps sampling, change detection that ignores the cursor, 2×2 sheets with burned-in mm:ss | `screencast/` |
+| Pointer moments | circling, resting after moving, clicks → zoomed shots with a red cursor box | `vtc.py` |
+| Delivery | paste into the open chat (default), or a new Code session via `claude://code/new`, or clipboard | `paste.swift`, `vtc.py` |
+| Retention | prune takes older than 7 days, keep the newest 30, menu-bar and CLI cleanup | `vtc.py` |
+| Claude Code skill | `/srtc …` for digests, status, cleanup and troubleshooting | `SKILL.md` |
+
+## FAQ
+
+<details><summary>Does it send my recording as context or as a prompt?</summary>
+As a prompt. The pasted message says "my spoken words are the request" followed by your transcript, with the images
+attached. Claude acts on it when you press Enter. Type a line like "just context for now" before Enter if you want it
+treated as background only.</details>
+
+<details><summary>Which chat does it go to?</summary>
+Whatever Claude chat is in front when the take finishes. Open a new chat first if you want a new one. Set
+<code>"deliver": "deeplink"</code> to always open a new Code session with the files attached instead.</details>
+
+<details><summary>Why a toggle and not hold-to-talk?</summary>
+Hold-to-talk recorders have to block the keyboard while held, so you can't scroll, click or type. A toggle needs no
+blocking; your hands stay free for the demo.</details>
+
+<details><summary>Where do recordings go and how big are they?</summary>
+<code>~/Movies/SRTC</code> by default: about 14 MB per minute of video plus a few MB of digest. Takes older
+than 7 days are deleted automatically (keeping the newest 30); the menu bar has "Delete recordings…" items and
+<code>vtc.py clean --all</code> wipes everything.</details>
+
+<details><summary>The hotkey suddenly does nothing.</summary>
+Look at the menu bar. "hotkey blocked: password field" means an app holds macOS secure keyboard input (a focused
+password field, often a browser), which disables every global hotkey on the system; click out of it. If the circle is
+orange, the Accessibility grant was lost: see <a href="docs/troubleshooting.md">troubleshooting</a>.</details>
+
+<details><summary>Can I use my AirPods?</summary>
+Yes. Make <code>mic</code> a priority list, e.g. <code>["AirPods Pro", "ME6S", "MacBook Pro Microphone"]</code>; the
+first device that is actually connected at record time wins.</details>
+
+<details><summary>Does Claude have this natively?</summary>
+The Claude desktop app contains a "Record your screen" mode (Cowork tab) that attaches a screen + voice recording to the
+chat, capped at 10 minutes, no hotkey, gated server-side per account. This tool exists because that gate was off and
+because the Code tab, a hotkey and pointer zooms were wanted. Findings in <code>screencast/teardown.md</code>.</details>
+
+## Documentation
+
+- [Installation guide](docs/installation.md): requirements, every step, the permission prompts, verification, update, uninstall.
+- [Settings reference](docs/settings.md): every key in `~/.config/vtc.json`.
+- [Troubleshooting](docs/troubleshooting.md): symptoms → causes → fixes, with the log files to look at.
+- [Blueprint](screencast/BLUEPRINT.md) and [teardown](screencast/teardown.md): design decisions, measurements, and what
+  was learned from Claude.app's deep links and native recorder and from VoiceOS.
+
+## Disclaimer
+
+This is a personal tool that drives the Claude desktop app through its public `claude://` links and the macOS
+pasteboard. It copies nothing from Anthropic's or anyone else's software; the teardown notes document interfaces only.
+Expect to re-check the delivery step after major Claude app updates.
+
+## License
+
+MIT. See [LICENSE](LICENSE). © 2026 George Blaze, Phase56.

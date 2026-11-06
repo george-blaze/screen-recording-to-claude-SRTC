@@ -1,4 +1,4 @@
-# Screen recordings as requests (Video to Claude)
+# Screen recordings as requests (SRTC)
 
 When a message carries a screen recording (frames, a `watch-record-events` block, a transcript) and the typed text is empty or just a word or two, the spoken narration IS my request.
 - Use the frames and the click positions to resolve "this", "here", "that one", "the thing I'm pointing at".

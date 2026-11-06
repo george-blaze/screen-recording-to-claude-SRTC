@@ -1,4 +1,4 @@
-// Video to Claude agent v3: menu-bar status + countdown + hotkey + Esc cancel + mouse log. One binary, one set of grants.
+// SRTC (Screen Recorder to Claude) agent v3: menu-bar status + countdown + hotkey + Esc cancel + mouse log. One binary, one set of grants.
 import Cocoa
 import AVFoundation
 import Carbon.HIToolbox
@@ -55,7 +55,7 @@ let cancelItem = NSMenuItem(title: "Cancel recording (Esc)", action: #selector(C
 class Ctl: NSObject {
     @objc func toggle() { run("toggle") }
     @objc func cancel() { run("cancel") }
-    @objc func openFolder() { NSWorkspace.shared.open(URL(fileURLWithPath: (cfg()["recordings"] as? String) ?? (home.appendingPathComponent("Video to Claude/recordings").path))) }
+    @objc func openFolder() { NSWorkspace.shared.open(URL(fileURLWithPath: (cfg()["recordings"] as? String) ?? (home.appendingPathComponent("Movies/SRTC").path))) }
     @objc func openSettings() { NSWorkspace.shared.open(cfgFile) }
     @objc func cleanOld() { run("clean") }
     @objc func cleanAll() {
@@ -75,7 +75,7 @@ menu.addItem(.separator())
 let c1 = NSMenuItem(title: "Delete recordings older than the keep period", action: #selector(Ctl.cleanOld), keyEquivalent: ""); c1.target = ctl; menu.addItem(c1)
 let c2 = NSMenuItem(title: "Delete all recordings…", action: #selector(Ctl.cleanAll), keyEquivalent: ""); c2.target = ctl; menu.addItem(c2)
 menu.addItem(.separator())
-let q = NSMenuItem(title: "Quit Video to Claude", action: #selector(Ctl.quit), keyEquivalent: ""); q.target = ctl; menu.addItem(q)
+let q = NSMenuItem(title: "Quit SRTC", action: #selector(Ctl.quit), keyEquivalent: ""); q.target = ctl; menu.addItem(q)
 item.menu = menu
 
 // countdown panel (last `warn` seconds), top-right, never takes focus

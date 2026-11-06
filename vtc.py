@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vtc — Video to Claude. Toggle a screen+mic recording with one hotkey; when it stops,
+"""vtc — SRTC (Screen Recorder to Claude). Toggle a screen+mic recording with one hotkey; when it stops,
 the digest (timestamped sheets + on-device transcript) opens a new Claude Code session
 with your spoken words as the request and the sheets attached.
 
@@ -22,7 +22,7 @@ STATE = STATE_DIR / "current.json"
 CONFIG = Path.home() / ".config/vtc.json"
 DEFAULTS = {
     "folder": str(Path.home()),               # project folder a deeplink-mode session opens in
-    "recordings": str(Path.home() / "Movies" / "Video to Claude"),
+    "recordings": str(Path.home() / "Movies" / "SRTC"),
     "screen": 0,
     "mic": "default",                         # system default input (AirPods when connected); or a name from: python3 screencast/screencast.py devices
     "cap_seconds": 600,                       # 10 min, same as Claude's native recorder
@@ -123,7 +123,7 @@ def cmd_run(c, out):
         return p
     t0 = time.time()
     p = launch("ffmpeg" if backend in ("auto", "ffmpeg") else "screencapture")
-    notify("Video to Claude", "Recording. Press the hotkey again to stop.", SOUND_START)
+    notify("SRTC", "Recording. Press the hotkey again to stop.", SOUND_START)
     if backend == "auto":
         time.sleep(6)
         f = out
@@ -133,7 +133,7 @@ def cmd_run(c, out):
             try: p.send_signal(signal.SIGINT); p.wait(timeout=3)
             except Exception: p.kill()
             print(f"ffmpeg produced no data in 6 s: {last} → falling back to screencapture")
-            notify("Video to Claude", f"ffmpeg failed: {last[:90]} — trying Apple recorder", SOUND_WARN)
+            notify("SRTC", f"ffmpeg failed: {last[:90]} — trying Apple recorder", SOUND_WARN)
             p = launch("screencapture"); t0 = time.time()
     warned = False; warn_proc = None
     stream = StreamASR(out.with_suffix(".chunks"), c) if (c["asr"] == "stream" and (read_state() or {}).get("backend") == "ffmpeg") else None
@@ -142,7 +142,7 @@ def cmd_run(c, out):
         if not warned and el >= c["cap_seconds"] - c["warn_seconds"]:
             warned = True
             warn_proc = subprocess.Popen(["afplay", c.get("warn_sound") or SOUND_WARN])
-            notify("Video to Claude", f"{c['warn_seconds']} seconds left")
+            notify("SRTC", f"{c['warn_seconds']} seconds left")
         if stream: stream.poll()
         time.sleep(0.5)
     if warn_proc is not None and warn_proc.poll() is None: warn_proc.kill()   # stopped early: silence the countdown
@@ -150,13 +150,13 @@ def cmd_run(c, out):
     st["phase"] = "processing"; STATE.write_text(json.dumps(st))
     video = Path(st.get("file", out))
     if not video.exists() or video.stat().st_size < 1024:
-        notify("Video to Claude", "Nothing was recorded: grant Screen Recording + Microphone to vtc-hotkey (System Settings → Privacy & Security).", SOUND_WARN)
+        notify("SRTC", "Nothing was recorded: grant Screen Recording + Microphone to vtc-hotkey (System Settings → Privacy & Security).", SOUND_WARN)
         shutil.rmtree(out.with_suffix(".chunks"), ignore_errors=True)
         STATE.unlink(missing_ok=True); return
     ev = STATE_DIR / "events.jsonl"
     if ev.exists():
         ev.replace(video.with_suffix(".events.jsonl"))
-    notify("Video to Claude", "Processing…")
+    notify("SRTC", "Processing…")
     try:
         transcript = stream.finish() if stream else None
         finish(c, video, transcript=transcript)
@@ -181,7 +181,7 @@ def cmd_cancel(c):
             try: os.kill(st[k], signal.SIGKILL)
             except OSError: pass
     Path(st.get("file", "")).unlink(missing_ok=True); STATE.unlink(missing_ok=True)
-    notify("Video to Claude", "Recording cancelled"); print("cancelled")
+    notify("SRTC", "Recording cancelled"); print("cancelled")
 
 
 def cmd_toggle(c):
@@ -264,9 +264,9 @@ def finish(c, video, transcript=None):
     short = spoken[: c["max_prompt_chars"]] + ("…" if len(spoken) > c["max_prompt_chars"] else "")
     warn = (workdir / "audio_warning.txt").read_text().strip() if (workdir / "audio_warning.txt").exists() else ""
     if warn:
-        notify("Video to Claude", "Audio was very quiet — wrong microphone? Check mic in ~/.config/vtc.json", SOUND_WARN)
+        notify("SRTC", "Audio was very quiet — wrong microphone? Check mic in ~/.config/vtc.json", SOUND_WARN)
     warn_line = f"⚠ {warn} Treat the words above as unreliable and rely on the frames and pointer sheets.\n" if warn else ""
-    prompt = (f"Screen recording request (Video to Claude). My spoken words are the request:\n\"{short or '(no speech captured)'}\"\n"
+    prompt = (f"Screen recording request (SRTC). My spoken words are the request:\n\"{short or '(no speech captured)'}\"\n"
               f"{warn_line}"
               f"Attached: DIGEST.md (full timestamped transcript + sheet index), {len(pointer_sheets)} pointer sheets (zoomed views of what I pointed at, circled or clicked, red box = cursor) and {len(sheets)} sheets of what was on my screen "
               f"while I spoke; each tile is stamped mm:ss and lines up with the transcript. Do what I asked; use the frames to "
@@ -281,17 +281,17 @@ def finish(c, video, transcript=None):
         cmd = [str(HERE / "paste"), str(tf)] + (["--send"] if c["auto_send"] else []) + ["--files"] + [str(i) for i in images]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode:
-            notify("Video to Claude", "Claude isn't in front; prompt is on the clipboard — paste it.", SOUND_DONE)
+            notify("SRTC", "Claude isn't in front; prompt is on the clipboard — paste it.", SOUND_DONE)
         else:
-            notify("Video to Claude", f"Dropped into your open chat: {len(images)} images, {len(spoken.split())} words." + ("" if c["auto_send"] else " Press Enter."), SOUND_DONE)
+            notify("SRTC", f"Dropped into your open chat: {len(images)} images, {len(spoken.split())} words." + ("" if c["auto_send"] else " Press Enter."), SOUND_DONE)
     elif c["deliver"] == "deeplink":
         q = urllib.parse.urlencode({"folder": c["folder"], "q": prompt, "source": "video_to_claude"})
         files = [workdir / "DIGEST.md"] + pointer_sheets[:12] + sheets[:40]
         q += "".join("&file=" + urllib.parse.quote(str(f), safe="") for f in files)
         subprocess.run(["open", f"claude://code/new?{q}"])
-        notify("Video to Claude", f"Sent to Claude: {len(sheets)} sheets, {len(spoken.split())} words. Prompt also on clipboard.", SOUND_DONE)
+        notify("SRTC", f"Sent to Claude: {len(sheets)} sheets, {len(spoken.split())} words. Prompt also on clipboard.", SOUND_DONE)
     else:
-        notify("Video to Claude", "Prompt copied. Paste it into Claude and attach the digest folder.", SOUND_DONE)
+        notify("SRTC", "Prompt copied. Paste it into Claude and attach the digest folder.", SOUND_DONE)
     print(f"delivered: {workdir}")
 
 

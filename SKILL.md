@@ -1,14 +1,14 @@
 ---
-name: video-to-claude
-description: Hotkey screen+voice recorder whose takes land in the open Claude chat as the prompt (narration = request, screenshots + pointer zooms = context). Use when the user mentions Video to Claude, vtc, the ⌃⌘S recorder, wants an existing screen recording (.mov/.mp4) digested into sheets + transcript, wants to change the hotkey/mic/cap/retention, clean recordings, or when the hotkey or audio stops working.
+name: srtc
+description: SRTC (Screen Recorder to Claude), a hotkey screen+voice recorder whose takes land in the open Claude chat as the prompt (narration = request, screenshots + pointer zooms = context). Use when the user mentions SRTC, Screen Recorder to Claude, Video to Claude, vtc, the ⌃⌘S recorder, wants an existing screen recording (.mov/.mp4) digested into sheets + transcript, wants to change the hotkey/mic/cap/retention, clean recordings, or when the hotkey or audio stops working.
 user-invocable: true
 argument-hint: "[status | digest <video> | clean | usage | install | help]"
 allowed-tools: Bash, Read
 ---
 
-# Video to Claude
+# SRTC — Screen Recorder to Claude
 
-`SKILL_DIR` is the directory containing this SKILL.md (normally `~/.claude/skills/video-to-claude`). Every command
+`SKILL_DIR` is the directory containing this SKILL.md (normally `~/.claude/skills/srtc`). Every command
 below runs from there. The tool is `python3 "$SKILL_DIR/vtc.py"`; the digest engine is `python3 "$SKILL_DIR/screencast/screencast.py"`.
 
 ## What it does
@@ -26,11 +26,11 @@ below runs from there. The tool is `python3 "$SKILL_DIR/vtc.py"`; the digest eng
 | digest an existing recording (any .mov/.mp4) | `python3 "$SKILL_DIR/screencast/screencast.py" digest "<file>"` → then `Read` the printed `DIGEST.md`, then each sheet in `sheets/` and `pointer/` |
 | storage usage | `python3 "$SKILL_DIR/vtc.py" usage` |
 | clean old takes / clean everything | `python3 "$SKILL_DIR/vtc.py" clean` / `python3 "$SKILL_DIR/vtc.py" clean --all` |
-| change hotkey / mic / cap / retention | edit `~/.config/vtc.json` (keys: `hotkey`, `mic`, `cap_seconds`, `warn_seconds`, `keep_days`, `deliver`, `auto_send`, `asr`), then `launchctl kickstart -k gui/$(id -u)/com.videotoclaude.hotkey` |
+| change hotkey / mic / cap / retention | edit `~/.config/vtc.json` (keys: `hotkey`, `mic`, `cap_seconds`, `warn_seconds`, `keep_days`, `deliver`, `auto_send`, `asr`), then `launchctl kickstart -k gui/$(id -u)/com.srtc.hotkey` |
 | install / reinstall | `"$SKILL_DIR/install.sh"` (the user must run it: it registers a login agent and a keychain certificate) |
 
 When the user asks a question about a recording they just made, the digest folder is `recordings/<date>.digest/`
-next to the video (default `~/Movies/Video to Claude/`, or `recordings` in `~/.config/vtc.json`): read `DIGEST.md`
+next to the video (default `~/Movies/SRTC/`, or `recordings` in `~/.config/vtc.json`): read `DIGEST.md`
 first, then the sheets it lists.
 
 ## Troubleshooting (check in this order)
@@ -40,7 +40,7 @@ first, then the sheets it lists.
    grant lost (happens after rebuilding without `sign.sh`). System Settings → Privacy & Security → Accessibility:
    remove `vtc-hotkey` (−), add it again (+ or drag the binary in). The agent arms itself within 2 s.
 3. **"Nothing was recorded"** → Screen Recording or Microphone grant missing for `vtc-hotkey`; Screen Recording only
-   applies after `launchctl kickstart -k gui/$(id -u)/com.videotoclaude.hotkey`.
+   applies after `launchctl kickstart -k gui/$(id -u)/com.srtc.hotkey`.
 4. **Transcript empty or garbage** → check the digest's "audio peak / average" line; below −40 dB average means the
    wrong mic. `mic` in `~/.config/vtc.json` is a priority list; `python3 "$SKILL_DIR/screencast/screencast.py" devices` lists devices.
 5. **Transcript OK but late** → Whisper model missing (`models/whisper-large-v3-turbo/weights.safetensors`); see README.
