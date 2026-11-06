@@ -115,7 +115,7 @@ input.installTap(onBus: 0, bufferSize: 4800, format: inFmt) { buf, _ in
         for i in 0..<n { let v = src[0][i]; sum += v * v }
         let db = 20 * log10(max(sqrt(sum / Float(n)), 1e-6))
         let level = min(max((db + 50) / 40, 0), 1)
-        writeQ.async { try? String(format: "%.3f\n", level).data(using: .utf8)!.write(to: levelFile, options: .atomic) }
+        writeQ.async { try? String(format: "%.3f\n", Double(level)).data(using: .utf8)!.write(to: levelFile, options: .atomic) }
     }
     let cap = AVAudioFrameCount(Double(buf.frameLength) * 48000.0 / inFmt.sampleRate) + 32
     guard let ob = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else { return }

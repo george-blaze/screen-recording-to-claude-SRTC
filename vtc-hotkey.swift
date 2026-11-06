@@ -1,6 +1,7 @@
 // SRTC (Screen Recording To Claude) agent v3: menu-bar status + countdown + hotkey + Esc cancel + mouse log. One binary, one set of grants.
 import Cocoa
 import AVFoundation
+import ScreenCaptureKit
 import Carbon.HIToolbox
 
 let vtc = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "vtc.py"
@@ -229,6 +230,40 @@ func refresh() {
 }
 Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in refresh() }
 
+// ---------------- other displays (only while recording) ----------------
+// avfoundation records one display. When the cursor is on another one, this agent (which holds the Screen Recording
+// grant) snapshots that display ~2×/s, and at once on a click, into shots/d<k>_<epoch>.jpg; the runner picks the
+// nearest one for each pointer moment there.
+let shotsDir = stateDir.appendingPathComponent("shots")
+var scContent: SCShareableContent? = nil
+var shotBusy = false
+var lastShot = Date.distantPast
+func recordedScreenIndex() -> Int { cfg()["screen"] as? Int ?? 0 }
+func refreshShareableContent() {
+    SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { c, e in
+        scContent = c; if let e = e { NSLog("vtc: shareable content: \(e)") }
+    }
+}
+func snapOtherDisplay(force: Bool = false) {
+    guard recording, !shotBusy, force || Date().timeIntervalSince(lastShot) >= 0.45 else { return }
+    let p = NSEvent.mouseLocation
+    guard let k = NSScreen.screens.firstIndex(where: { NSPointInRect(p, $0.frame) }), k != recordedScreenIndex() else { return }
+    guard let num = NSScreen.screens[k].deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+          let d = scContent?.displays.first(where: { $0.displayID == CGDirectDisplayID(truncating: num) }) else { return }
+    shotBusy = true; lastShot = Date()
+    let stamp = String(format: "%.3f", Date().timeIntervalSince1970)
+    let conf = SCStreamConfiguration()
+    conf.width = 1600; conf.height = max(1, Int(1600.0 * Double(d.height) / Double(max(d.width, 1)))); conf.showsCursor = true
+    SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: d, excludingWindows: []), configuration: conf) { img, err in
+        defer { shotBusy = false }
+        guard let img = img else { if let e = err { NSLog("vtc: display \(k) shot failed: \(e)") }; return }
+        guard let data = NSBitmapImageRep(cgImage: img).representation(using: .jpeg, properties: [.compressionFactor: 0.75]) else { return }
+        try? FileManager.default.createDirectory(at: shotsDir, withIntermediateDirectories: true)
+        try? data.write(to: shotsDir.appendingPathComponent("d\(k)_\(stamp).jpg"))
+    }
+}
+Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in snapOtherDisplay() }
+
 // ---------------- mouse event log (only while recording) ----------------
 var recording = false
 var lastMoveWrite = Date.distantPast
@@ -246,6 +281,7 @@ func checkRecording(force: Bool = false) {
         let header = "{\"k\":\"screen\",\"w\":\(Int(scr.width)),\"h\":\(Int(scr.height)),\"scale\":\(scale),\"screens\":[\(screens)],\"t\":\(Date().timeIntervalSince1970)}\n"
         try? header.write(to: eventsFile, atomically: true, encoding: .utf8)
         handle = try? FileHandle(forWritingTo: eventsFile); handle?.seekToEndOfFile()
+        try? FileManager.default.removeItem(at: shotsDir); refreshShareableContent()
     } else if !isRec && recording {
         recording = false; try? handle?.close(); handle = nil
     }
@@ -253,6 +289,7 @@ func checkRecording(force: Bool = false) {
 func logEvent(_ kind: String) {
     guard recording, let h = handle else { return }
     let now = Date()
+    if kind == "down" { snapOtherDisplay(force: true) }
     if kind == "move" { if now.timeIntervalSince(lastMoveWrite) < 0.033 { return }; lastMoveWrite = now }
     let p = NSEvent.mouseLocation
     h.write("{\"k\":\"\(kind)\",\"x\":\(Int(p.x)),\"y\":\(Int(p.y)),\"t\":\(now.timeIntervalSince1970)}\n".data(using: .utf8)!)

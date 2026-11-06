@@ -125,23 +125,6 @@ def ffmpeg_cmd(c, out, piped_mic=False):
 CHUNK_FILTER = "aresample=async=1:first_pts=0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
-def extra_cmds(c, out):
-    """One low-rate, video-only recorder per display other than the recorded one, so a pointer moment on another screen
-    (you moved to the laptop display) still gets its screenshot. Returns [(screen index, file, cmd)]. Best effort."""
-    import re
-    from screencast import list_devices
-    video, _ = list_devices(); cmds = []
-    for idx, name in video.items():
-        m = re.match(r"Capture screen (\d+)$", name)
-        if not m or int(m[1]) == int(c["screen"]): continue
-        n = int(m[1]); f = out.with_name(f"{out.stem}.d{n}.mp4")
-        cmds.append((n, f, ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "avfoundation", "-capture_cursor", "1",
-                            "-framerate", "15", "-i", f"{idx}:none", "-t", str(c["cap_seconds"]),
-                            "-vf", "fps=4,scale=1600:-2,format=yuv420p", "-c:v", "h264_videotoolbox", "-b:v", "1500k", "-realtime", "1",
-                            "-movflags", "+faststart", str(f)]))
-    return cmds
-
-
 def audio_cmd(c, out):
     """Mic-only ffmpeg fed by miccap on stdin: full-length wav (muxed into the mp4 at stop) + live 16 kHz chunks."""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "s16le", "-ar", "48000", "-ac", "1",
@@ -201,22 +184,7 @@ def cmd_run(c, out):
     """The detached runner."""
     out = Path(out); backend = c["backend"]
     import screencast as _sc
-    mic_p = aud_p = None; extras = []                      # extras: [{"screen", "file", "proc"}] other displays, video only
-    def stop_extras():
-        """SIGINT each extra recorder; its first frame's wall-clock time = when it stopped - its length."""
-        done = []
-        for x in extras:
-            q = x.pop("proc", None)
-            if q is not None and q.poll() is None:
-                try: q.send_signal(signal.SIGINT); q.wait(timeout=5)
-                except Exception:
-                    try: q.kill()
-                    except Exception: pass
-            t_stop = time.time(); f = Path(x["file"]); d = media_duration(f) if f.exists() and f.stat().st_size > 1024 else None
-            if d: x["video_start"] = t_stop - d; done.append(x)
-            else: f.unlink(missing_ok=True); print(f"  display {x['screen']}: no video (see recorder-d{x['screen']}.log)", flush=True)
-        extras[:] = done
-        return done
+    mic_p = aud_p = None
     def stop_mic():
         nonlocal mic_p, aud_p
         for q, sig in ((aud_p, signal.SIGINT), (mic_p, signal.SIGTERM)):      # ffmpeg finalizes the wav; miccap restores the default input
@@ -238,20 +206,9 @@ def cmd_run(c, out):
             aud_p = subprocess.Popen(audio_cmd(c, out), stdin=mic_p.stdout, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / "recorder-audio.log", "w"))
             mic_p.stdout.close()                 # the audio ffmpeg owns the read end; miccap sees EPIPE when it stops
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-{b}.log", "w"))
-        for x in extras:
-            if x.get("proc") is not None and x["proc"].poll() is None: x["proc"].kill()
-            Path(x["file"]).unlink(missing_ok=True)
-        extras[:] = []
-        if b == "ffmpeg":
-            try:
-                for n, f, xc in extra_cmds(c, out):
-                    q = subprocess.Popen(xc, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-d{n}.log", "w"))
-                    extras.append({"screen": n, "file": str(f), "proc": q})
-            except Exception as e: print(f"  extra displays not recorded: {e}", flush=True)
         STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "mic_pid": mic_p.pid if mic_p else None,
                                      "audio_pid": aud_p.pid if aud_p else None, "backend": b, "phase": "recording", "mic": _sc.LAST_MIC_NAME,
                                      "mic_mode": "voice" if piped else "raw", "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")),
-                                     "extras": [{"screen": x["screen"], "file": x["file"], "pid": x["proc"].pid} for x in extras],
                                      "started": time.time()}))
         return p
     def kill_rec(p):
@@ -301,7 +258,6 @@ def cmd_run(c, out):
         time.sleep(0.2)
     t_end = time.time()
     if warn_proc is not None and warn_proc.poll() is None: warn_proc.kill()   # stopped early: silence the countdown
-    stop_extras()
     piped_wav = out.with_suffix(".wav") if aud_p is not None else None
     tail = 0.0
     if aud_p is not None and aud_p.poll() is None:
@@ -327,11 +283,11 @@ def cmd_run(c, out):
         ev.replace(video.with_suffix(".events.jsonl"))
     vd = media_duration(video)
     if vd: st["video_start"] = t_end - vd; STATE.write_text(json.dumps(st))   # first frame's wall-clock time: pointer events line up with it
-    evf = video.with_suffix(".events.jsonl")
-    if evf.exists():   # which video shows which display, and when each one's first frame was: pointer_moments routes by this
-        with evf.open("a") as fh:
-            fh.write(json.dumps({"k": "videos", "video_start": st.get("video_start"),
-                                 "extras": [{"screen": x["screen"], "file": x["file"], "video_start": x["video_start"]} for x in extras]}) + "\n")
+    # the agent's screenshots of other displays (taken while the cursor was there) + the first frame's wall-clock time,
+    # in a sidecar of their own: the agent may still hold the events file open for a moment, so nothing is appended there
+    shots = STATE_DIR / "shots"; sdir = video.with_name(video.stem + ".shots")
+    if shots.exists(): shutil.rmtree(sdir, ignore_errors=True); shots.replace(sdir)
+    video.with_name(video.stem + ".videos.json").write_text(json.dumps({"video_start": st.get("video_start"), "shots": str(sdir) if sdir.exists() else None}))
     notify("SRTC", "Processing…")
     try:
         try: transcript = stream.finish() if stream else None
@@ -362,11 +318,7 @@ def cmd_cancel(c):
         try: os.kill(st["mic_pid"], signal.SIGTERM)          # lets miccap restore the previous default input
         except OSError: pass
     f = Path(st.get("file", "")); f.unlink(missing_ok=True); f.with_suffix(".wav").unlink(missing_ok=True)
-    for x in st.get("extras") or []:
-        if alive(x.get("pid") or -1):
-            try: os.kill(x["pid"], signal.SIGKILL)
-            except OSError: pass
-        Path(x["file"]).unlink(missing_ok=True)
+    shutil.rmtree(STATE_DIR / "shots", ignore_errors=True)
     shutil.rmtree(f.with_suffix(".chunks"), ignore_errors=True); STATE.unlink(missing_ok=True)
     notify("SRTC", "Recording cancelled"); print("cancelled")
 
@@ -786,15 +738,17 @@ def pointer_moments(c, video, workdir):
     A moment on a display other than the recorded one comes from that display's low-rate video (<take>.dN.mp4)."""
     ev = Path(video).with_suffix(".events.jsonl")
     if not ev.exists(): return [], []
-    events, screen, videos = [], None, {}
+    events, screen = [], None
     for line in ev.read_text().splitlines():
         try: e = json.loads(line)
         except Exception: continue
         if e.get("k") == "screen": screen = e
-        elif e.get("k") == "videos": videos = e
         else: events.append(e)
     if not screen or not events: return [], []
     st = read_state() or {}
+    vj = Path(video).with_name(Path(video).stem + ".videos.json")
+    try: videos = json.loads(vj.read_text()) if vj.exists() else {}
+    except Exception: videos = {}
     start_epoch = videos.get("video_start") or st.get("video_start") or screen["t"]
     def probe(path):
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
@@ -806,9 +760,14 @@ def pointer_moments(c, video, workdir):
     screens = screen.get("screens") or [{"x": 0, "y": 0, "w": screen["w"], "h": screen["h"]}]
     main = int(c.get("screen", 0)) if int(c.get("screen", 0)) < len(screens) else 0
     sources = {main: {"file": str(video), "start": start_epoch, "dims": dims, "scr": screens[main]}}
-    for x in videos.get("extras") or []:
-        k = x["screen"]; f = Path(x["file"]); d = probe(f) if f.exists() and k < len(screens) else None
-        if d: sources[k] = {"file": str(f), "start": x["video_start"], "dims": d, "scr": screens[k]}
+    shots = {}                                  # display index → sorted [(epoch, path)] of the agent's screenshots of it
+    sdir = Path(videos["shots"]) if videos.get("shots") else None
+    for f in (sorted(sdir.glob("d*_*.jpg")) if sdir and sdir.exists() else []):
+        try: k, ep = f.stem[1:].split("_"); shots.setdefault(int(k), []).append((float(ep), f))
+        except ValueError: continue
+    for k in list(shots):
+        if k < len(screens) and k != main: sources[k] = {"shots": sorted(shots[k]), "scr": screens[k]}
+        else: del shots[k]
     def display_of(m):
         for k, sc in enumerate(screens):
             if sc["x"] <= m["x"] < sc["x"] + sc["w"] and sc["y"] <= m["y"] < sc["y"] + sc["h"]: return k
@@ -820,10 +779,24 @@ def pointer_moments(c, video, workdir):
     moments = [m for m in moments if m["display"] in sources]
     if not moments: return [], []
     def frame(m):
-        """(video path, time in it, cursor x, cursor y, width, height) for a moment: screen points (origin bottom-left) → video pixels."""
-        src = sources[m["display"]]; sc = src["scr"]; vw, vh = src["dims"]
+        """(source, seek args, cursor x, cursor y, width, height) for a moment, or None: the recorded display's video at that
+        time, else the agent's screenshot of the other display nearest to it (within 1.5 s). Screen points (origin
+        bottom-left) → image pixels."""
+        import bisect
+        src = sources[m["display"]]; sc = src["scr"]
+        if "shots" in src:
+            eps = [e for e, _ in src["shots"]]; ep = m["t"] + start_epoch
+            i = bisect.bisect_left(eps, ep); cands = [j for j in (i - 1, i) if 0 <= j < len(eps)]
+            if not cands: return None
+            j = min(cands, key=lambda j: abs(eps[j] - ep))
+            if abs(eps[j] - ep) > 1.5: return None
+            path = src["shots"][j][1]; d = probe(path)
+            if not d: return None
+            vw, vh = d; seek = []
+        else:
+            vw, vh = src["dims"]; seek = ["-ss", f"{max(m['t'] + start_epoch - src['start'] - 0.1, 0.0):.2f}"]; path = src["file"]
         px = (m["x"] - sc["x"]) / sc["w"] * vw; py = (sc["h"] - (m["y"] - sc["y"])) / sc["h"] * vh
-        return src["file"], max(m["t"] + start_epoch - src["start"] - 0.1, 0.0), px, py, vw, vh
+        return str(path), seek, px, py, vw, vh
     pdir = workdir / "pointer"; pdir.mkdir(exist_ok=True)
     if c.get("prompt_style", "plain") == "plain":
         # one full-frame screenshot per moment (cursor boxed in red), numbered in spoken order: these are the [n] in the prompt
@@ -832,21 +805,25 @@ def pointer_moments(c, video, workdir):
             step = len(keep) / c["paste_max_images"]; keep = [keep[int(k * step)] for k in range(c["paste_max_images"])]
         shots = []
         for i, m in enumerate(keep):
-            src, t, px, py, vw, vh = frame(m)
-            out = pdir / f"shot_{i + 1:02d}.jpg"
-            r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", src,
+            fr = frame(m)
+            if fr is None: continue
+            src, seek, px, py, vw, vh = fr
+            out = pdir / f"shot_{len(shots) + 1:02d}.jpg"
+            r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"] + seek + ["-i", src,
                                 "-frames:v", "1", "-vf", f"drawbox=x={int(px) - 30}:y={int(py) - 30}:w=60:h=60:color=red@0.9:t=5,scale=1600:-2",
                                 "-q:v", "3", str(out)], capture_output=True, text=True)
             if r.returncode == 0 and out.exists(): shots.append(out); m["shot"] = str(out)
         return shots, [m for m in keep if "shot" in m]
     rows = []
     for i, m in enumerate(moments):
-        src, t, px, py, vw, vh = frame(m)
+        fr = frame(m)
+        if fr is None: continue
+        src, seek, px, py, vw, vh = fr
         crop_w, crop_h = min(960, vw), min(600, vh)
         x0 = int(min(max(px - crop_w / 2, 0), vw - crop_w)); y0 = int(min(max(py - crop_h / 2, 0), vh - crop_h))
         bx, by = int(px - x0), int(py - y0)
         out = pdir / f"p{i:02d}.jpg"
-        r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", src,
+        r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"] + seek + ["-i", src,
                             "-frames:v", "1", "-vf", f"crop={crop_w}:{crop_h}:{x0}:{y0},drawbox=x={bx - 28}:y={by - 28}:w=56:h=56:color=red@0.9:t=4,scale=780:-2",
                             "-q:v", "3", str(out)], capture_output=True, text=True)
         if r.returncode == 0 and out.exists():
