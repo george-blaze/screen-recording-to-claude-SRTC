@@ -1,0 +1,18 @@
+# built helpers (install.sh compiles them)
+vtc-hotkey
+paste
+screencast/transcribe
+screencast/sheet
+*.new
+# large / local data
+models/
+recordings/
+sounds/countdown.aiff
+# python
+__pycache__/
+*.pyc
+.DS_Store
+# files from other work that live in this folder but are not part of the tool
+VOICEOS_TEARDOWN.md
+paid-ads-prompt-structure.md
+test-ads-3nov-analysis.md
