@@ -87,7 +87,7 @@ def ffmpeg_cmd(c, out):
             "-c:v", "h264_videotoolbox", "-b:v", "4M", "-realtime", "1", "-movflags", "+faststart", str(out)]
     if has_audio and c["asr"] == "stream":   # second output: 16 kHz mono wav chunks, transcribed while you talk
         chunks = out.with_suffix(".chunks"); chunks.mkdir(exist_ok=True)
-        cmd += ["-map", "1:a", "-af", "aresample=async=1:first_pts=0", "-ac", "1", "-ar", "16000",
+        cmd += ["-map", "1:a", "-af", "aresample=async=1:first_pts=0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11", "-ac", "1", "-ar", "16000",
                 "-f", "segment", "-segment_time", str(c["chunk_seconds"]), "-reset_timestamps", "1", str(chunks / "%04d.wav")]
     return cmd
 
@@ -310,6 +310,16 @@ class StreamASR:
     HALLUCINATIONS = {"thank you.", "thank you", "thanks for watching.", "thanks for watching", "you", "bye.", "."}
 
     @staticmethod
+    def plausible(sg):
+        """Drop what Whisper produces on noise: low confidence, 'no speech', or a looping word."""
+        import re
+        t = sg.get("text", "").strip()
+        if not t: return False
+        if sg.get("nsp", 0) > 0.6 or sg.get("lp", 0) < -1.0 or sg.get("cr", 0) > 2.4: return False
+        if re.search(r"\b(\w+)(?:\W+\1\b){3,}", t, re.I): return False       # "can can can can"
+        return True
+
+    @staticmethod
     def chunk_rms_db(path):
         import numpy as np
         try:
@@ -345,7 +355,7 @@ class StreamASR:
         lines = []
         for i, f in enumerate(sorted(self.chunks.glob("*.wav"))):
             base = i * self.c["chunk_seconds"]
-            segs = self.results.get(f, [])
+            segs = [sg for sg in self.results.get(f, []) if self.plausible(sg)]
             if len(segs) == 1 and segs[0]["text"].strip().lower() in self.HALLUCINATIONS: segs = []
             for sgm in segs:
                 t = base + sgm["start"]; lines.append(f"[{int(t) // 60:02d}:{int(t) % 60:02d}] {sgm['text']}")

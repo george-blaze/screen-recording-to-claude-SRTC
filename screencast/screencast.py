@@ -284,11 +284,9 @@ def digest(video, workdir, a):
     t0 = time.time(); workdir = Path(workdir); workdir.mkdir(parents=True, exist_ok=True)
     dur, has_audio, (w, h) = probe(video)
     print(f"▶ {Path(video).name}: {hms(dur)}, {w}x{h}, audio={'yes' if has_audio else 'no'}", flush=True)
-    asr = None; audio_peak_db = None
+    asr = None; audio_peak_db = measure_peak_db(video) if has_audio else None
     if has_audio and a.asr != "none":           # audio demux is instant; ASR overlaps the frame pass
         wav = workdir / "audio.wav"
-        # measure the raw level first (a wrong/distant mic shows up as a very low peak), then normalize for ASR
-        audio_peak_db = measure_peak_db(video)
         run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
              "-af", "aresample=async=1:first_pts=0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11", str(wav)])
         asr = start_asr(wav, a.asr, workdir / "transcript.txt")
