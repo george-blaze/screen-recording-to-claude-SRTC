@@ -1,4 +1,4 @@
-# SRTC: Screen Recorder to Claude
+# SRTC: Screen Recording To Claude
 
 ### Talk and point instead of typing prompts. One hotkey records your screen and voice and drops the result into your open Claude chat as the request.
 
@@ -17,7 +17,7 @@ whatever you circled, rested on or clicked. Press Enter.
 ## Quick start
 
 ```bash
-git clone https://github.com/george-blaze/srtc.git ~/.claude/skills/srtc
+git clone https://github.com/george-blaze/screen-recording-to-claude-SRTC.git ~/.claude/skills/srtc
 ~/.claude/skills/srtc/install.sh
 ```
 

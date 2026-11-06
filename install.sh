@@ -1,5 +1,5 @@
 #!/bin/bash
-# SRTC (Screen Recorder to Claude) — one-shot installer. Run it yourself (it registers a login agent, a signing certificate, and edits ~/.claude/CLAUDE.md).
+# SRTC (Screen Recording To Claude) — one-shot installer. Run it yourself (it registers a login agent, a signing certificate, and edits ~/.claude/CLAUDE.md).
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vtc — SRTC (Screen Recorder to Claude). Toggle a screen+mic recording with one hotkey; when it stops,
+"""vtc — SRTC (Screen Recording To Claude). Toggle a screen+mic recording with one hotkey; when it stops,
 the digest (timestamped sheets + on-device transcript) opens a new Claude Code session
 with your spoken words as the request and the sheets attached.
 

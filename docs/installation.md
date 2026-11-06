@@ -1,6 +1,6 @@
 # SRTC installation guide
 
-SRTC (Screen Recorder to Claude) installs in about five minutes. The only parts you have to do by hand are three
+SRTC (Screen Recording To Claude) installs in about five minutes. The only parts you have to do by hand are three
 macOS permission prompts; everything else is one script.
 
 ## Requirements
@@ -20,7 +20,7 @@ agent, and a short rule appended to `~/.claude/CLAUDE.md`.
 ## Step 1: clone into your Claude skills folder
 
 ```bash
-git clone https://github.com/george-blaze/srtc.git ~/.claude/skills/srtc
+git clone https://github.com/george-blaze/screen-recording-to-claude-SRTC.git ~/.claude/skills/srtc
 ```
 
 Cloning into `~/.claude/skills/` makes the repo double as a Claude Code skill (`/srtc …`). You can clone anywhere

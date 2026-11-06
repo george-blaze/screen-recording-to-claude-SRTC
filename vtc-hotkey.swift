@@ -1,4 +1,4 @@
-// SRTC (Screen Recorder to Claude) agent v3: menu-bar status + countdown + hotkey + Esc cancel + mouse log. One binary, one set of grants.
+// SRTC (Screen Recording To Claude) agent v3: menu-bar status + countdown + hotkey + Esc cancel + mouse log. One binary, one set of grants.
 import Cocoa
 import AVFoundation
 import Carbon.HIToolbox

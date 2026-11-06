@@ -1,12 +1,12 @@
 ---
 name: srtc
-description: SRTC (Screen Recorder to Claude), a hotkey screen+voice recorder whose takes land in the open Claude chat as the prompt (narration = request, screenshots + pointer zooms = context). Use when the user mentions SRTC, Screen Recorder to Claude, Video to Claude, vtc, the ⌃⌘S recorder, wants an existing screen recording (.mov/.mp4) digested into sheets + transcript, wants to change the hotkey/mic/cap/retention, clean recordings, or when the hotkey or audio stops working.
+description: SRTC (Screen Recording To Claude), a hotkey screen+voice recorder whose takes land in the open Claude chat as the prompt (narration = request, screenshots + pointer zooms = context). Use when the user mentions SRTC, Screen Recording To Claude, Video to Claude, vtc, the ⌃⌘S recorder, wants an existing screen recording (.mov/.mp4) digested into sheets + transcript, wants to change the hotkey/mic/cap/retention, clean recordings, or when the hotkey or audio stops working.
 user-invocable: true
 argument-hint: "[status | digest <video> | clean | usage | install | help]"
 allowed-tools: Bash, Read
 ---
 
-# SRTC — Screen Recorder to Claude
+# SRTC — Screen Recording To Claude
 
 `SKILL_DIR` is the directory containing this SKILL.md (normally `~/.claude/skills/srtc`). Every command
 below runs from there. The tool is `python3 "$SKILL_DIR/vtc.py"`; the digest engine is `python3 "$SKILL_DIR/screencast/screencast.py"`.
