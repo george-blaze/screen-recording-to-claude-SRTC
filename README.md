@@ -140,6 +140,13 @@ Yes: <code>"asr_engine": "deepgram"</code> plus <code>"deepgram_api_key"</code> 
 20-second chunks to Deepgram nova-3 (what VoiceOS uses) instead of mlx-whisper. See <a href="docs/settings.md">settings</a>.
 </details>
 
+<details><summary>What does it cost, and is anything hosted?</summary>
+
+Nothing is hosted. Everything runs on your Mac; the repository ships no API keys, accounts or backend of its own.
+The only optional paid service is Deepgram, with your own key from <a href="https://console.deepgram.com">console.deepgram.com</a>
+(it comes with free starting credit); leave the key empty and transcription stays local with Whisper.
+</details>
+
 <details><summary>Which microphone does it use?</summary>
 By default (<code>"mic": "auto"</code>) the mic closest to your mouth: any connected headphones or headset, wired or
 wireless (AirPods, Beats, Jabra, Bose, Sony, …), otherwise whatever System Settings → Sound → Input is set to. Every
