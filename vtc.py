@@ -30,6 +30,7 @@ DEFAULTS = {
     "fps": 5, "width": 1920,
     "grid": "2x2", "asr": "stream",                # stream (Whisper during recording) | auto (Apple, after) | mlx | none
     "chunk_seconds": 20,
+    "language": "en",                         # Whisper language; "" = auto-detect per chunk (hallucinates foreign text on noise)
     "backend": "auto",                        # auto | ffmpeg | screencapture
     "deliver": "paste",                       # paste (into the chat in front of you) | deeplink (new session) | clipboard
     "auto_send": False,                       # paste mode: press Return after pasting
@@ -42,6 +43,7 @@ DEFAULTS = {
     "keep_last": 30,                          # always keep at least the newest N takes                    # max zoomed screenshots of what you pointed at / circled / clicked
 }
 SOUND_START = "/System/Library/Sounds/Tink.aiff"
+SOUND_ALERT = "/System/Library/Sounds/Sosumi.aiff"
 SOUND_WARN = str(HERE / "sounds" / "countdown.aiff")   # 20-s countdown: 1 beep/s, double-time last 5 s, long tone at 0
 SOUND_DONE = "/System/Library/Sounds/Glass.aiff"
 
@@ -125,15 +127,18 @@ def cmd_run(c, out):
     p = launch("ffmpeg" if backend in ("auto", "ffmpeg") else "screencapture")
     notify("SRTC", "Recording. Press the hotkey again to stop.", SOUND_START)
     if backend == "auto":
-        time.sleep(6)
-        f = out
-        if p.poll() is not None or not f.exists() or f.stat().st_size < 1024:
+        f = out; ok = False
+        for _ in range(24):                       # up to 12 s for the first bytes (USB mics can take a few seconds to open)
+            time.sleep(0.5)
+            if p.poll() is not None: break
+            if f.exists() and f.stat().st_size >= 1024: ok = True; break
+        if not ok:
             err = (STATE_DIR / "recorder-ffmpeg.log").read_text().strip().splitlines()
             last = err[-1] if err else "no frames arrived (Screen Recording / Microphone permission for vtc-hotkey?)"
             try: p.send_signal(signal.SIGINT); p.wait(timeout=3)
             except Exception: p.kill()
             print(f"ffmpeg produced no data in 6 s: {last} → falling back to screencapture")
-            notify("SRTC", f"ffmpeg failed: {last[:90]} — trying Apple recorder", SOUND_WARN)
+            notify("SRTC", f"ffmpeg failed: {last[:90]} — trying Apple recorder", "/System/Library/Sounds/Sosumi.aiff")
             p = launch("screencapture"); t0 = time.time()
     warned = False; warn_proc = None
     stream = StreamASR(out.with_suffix(".chunks"), c) if (c["asr"] == "stream" and (read_state() or {}).get("backend") == "ffmpeg") else None
@@ -150,7 +155,7 @@ def cmd_run(c, out):
     st["phase"] = "processing"; STATE.write_text(json.dumps(st))
     video = Path(st.get("file", out))
     if not video.exists() or video.stat().st_size < 1024:
-        notify("SRTC", "Nothing was recorded: grant Screen Recording + Microphone to vtc-hotkey (System Settings → Privacy & Security).", SOUND_WARN)
+        notify("SRTC", "Nothing was recorded: grant Screen Recording + Microphone to vtc-hotkey (System Settings → Privacy & Security).", SOUND_ALERT)
         shutil.rmtree(out.with_suffix(".chunks"), ignore_errors=True)
         STATE.unlink(missing_ok=True); return
     ev = STATE_DIR / "events.jsonl"
@@ -265,7 +270,7 @@ def finish(c, video, transcript=None):
     warn = (workdir / "audio_warning.txt").read_text().strip() if (workdir / "audio_warning.txt").exists() else ""
     if warn:
         notify("SRTC", "Audio was very quiet — wrong microphone? Check mic in ~/.config/vtc.json", SOUND_WARN)
-    warn_line = f"⚠ {warn} Treat the words above as unreliable and rely on the frames and pointer sheets.\n" if warn else ""
+    warn_line = f"⚠ {warn}\n" if warn else ""
     prompt = (f"Screen recording request (SRTC). My spoken words are the request:\n\"{short or '(no speech captured)'}\"\n"
               f"{warn_line}"
               f"Attached: DIGEST.md (full timestamped transcript + sheet index), {len(pointer_sheets)} pointer sheets (zoomed views of what I pointed at, circled or clicked, red box = cursor) and {len(sheets)} sheets of what was on my screen "
@@ -300,8 +305,9 @@ class StreamASR:
     """Feeds finished wav chunks to a persistent Whisper worker while recording; returns the full transcript at stop."""
     def __init__(self, chunks, c):
         self.chunks, self.c, self.done, self.results = Path(chunks), c, set(), {}
+        env = dict(os.environ, VTC_WHISPER_LANGUAGE=c.get("language") or "")
         self.worker = subprocess.Popen(["uv", "run", "-q", "--with", "mlx-whisper", "python", str(HERE / "asr_worker.py")],
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(STATE_DIR / "asr.log", "a"), text=True)
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(STATE_DIR / "asr.log", "a"), text=True, env=env)
         self.pending = 0
     def _finished_chunks(self, final=False):
         files = sorted(self.chunks.glob("*.wav"))
@@ -357,6 +363,9 @@ class StreamASR:
             base = i * self.c["chunk_seconds"]
             segs = [sg for sg in self.results.get(f, []) if self.plausible(sg)]
             if len(segs) == 1 and segs[0]["text"].strip().lower() in self.HALLUCINATIONS: segs = []
+            texts = [sg["text"].strip().lower() for sg in segs]
+            if len(segs) >= 3 and len(set(texts)) <= max(1, len(texts) // 3): segs = []   # "I", "I", "I", … across a chunk
+            segs = [sg for sg in segs if len(sg["text"].strip().strip(".,!? ")) > 2 or len(segs) == 1 and len(texts[0]) > 2]
             for sgm in segs:
                 t = base + sgm["start"]; lines.append(f"[{int(t) // 60:02d}:{int(t) % 60:02d}] {sgm['text']}")
         shutil.rmtree(self.chunks, ignore_errors=True)
