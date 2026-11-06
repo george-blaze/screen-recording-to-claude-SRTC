@@ -70,12 +70,12 @@ and leaves your `~/.config/vtc.json` alone.
 ```
  ⌃⌘S ──► vtc-hotkey (menu bar, Swift) ──► vtc.py runner
             │  logs mouse moves/clicks           │
-            │                                    ├─ ffmpeg: screen (5 fps) + mic as two inputs → .mp4
+            │                                    ├─ ffmpeg: screen (5 fps) + mic (via miccap) as two inputs → .mp4
             │                                    ├─ 20-s wav chunks → Whisper worker (mlx) → transcript, live
             │                                    └─ 9:40 countdown sound + red panel · 10:00 auto-stop
  ⌃⌘S ──► stop ──► digest ───────────────────────► 1 fps → changed frames only → 2×2 timestamped sheets
                                                   mouse log → circle / dwell / click → zoomed pointer sheets
-                                                  DIGEST.md (transcript + index) · quiet-audio check
+                                                  DIGEST.md (transcript + index) · audio check (muffled / clipping / quiet)
                   deliver ──────────────────────► paste (Swift): Claude to front, images then prompt into the composer
 ```
 
@@ -85,7 +85,7 @@ and leaves your `~/.config/vtc.json` alone.
 |---|---|---|
 | Hotkey toggle | ⌃⌘S start/stop, Esc cancel, configurable combo, no key blocking | `vtc-hotkey.swift` |
 | Menu bar | ○ idle · ● elapsed · ⚠ last 20 s · ⟳ processing · warns when a password field blocks hotkeys | `vtc-hotkey.swift` |
-| Capture | screen + mic with separate ffmpeg inputs (shared input drops ~75 % of mic audio), hardware H.264, 10-min cap; mic auto-picked (headphones first), quiet/clipping warnings | `vtc.py`, `audio-input.swift` |
+| Capture | screen + mic with separate ffmpeg inputs (shared input drops ~75 % of mic audio), hardware H.264, 10-min cap; mic auto-picked (headphones first), captured through Apple's voice-processing DSP (`miccap`), live muffled-mic alert, muffled/clipping/quiet warnings | `vtc.py`, `audio-input.swift`, `miccap.swift` |
 | Live transcription | Whisper large-v3-turbo on Apple silicon, 20-s chunks while you talk, silence gate, hallucination filter | `asr_worker.py`, `vtc.py` |
 | Digest | 1 fps sampling, change detection that ignores the cursor, 2×2 sheets with burned-in mm:ss | `screencast/` |
 | Pointer moments | circling, resting after moving, clicks → zoomed shots with a red cursor box | `vtc.py` |
@@ -118,11 +118,25 @@ Look at the menu bar. "hotkey blocked: password field" means an app holds macOS 
 password field, often a browser), which disables every global hotkey on the system; click out of it. If the circle is
 orange, the Accessibility grant was lost: see <a href="docs/troubleshooting.md">troubleshooting</a>.</details>
 
+<details><summary>Can I check the mic before a 10-minute take?</summary>
+
+Menu bar ○ → <b>Test microphone (5 s)</b>. Talk normally; you get a notification with the mic, its clarity and level,
+or the muffled / clipping / quiet warning a real take would carry. See <a href="docs/troubleshooting.md">troubleshooting</a>.
+</details>
+
+<details><summary>Can it use a cloud recognizer instead of local Whisper?</summary>
+
+Yes: <code>"asr_engine": "deepgram"</code> plus <code>"deepgram_api_key"</code> in <code>~/.config/vtc.json</code> sends the
+20-second chunks to Deepgram nova-3 (what VoiceOS uses) instead of mlx-whisper. See <a href="docs/settings.md">settings</a>.
+</details>
+
 <details><summary>Which microphone does it use?</summary>
 By default (<code>"mic": "auto"</code>) the mic closest to your mouth: any connected headphones or headset, wired or
 wireless (AirPods, Beats, Jabra, Bose, Sony, …), otherwise whatever System Settings → Sound → Input is set to. Every
-digest names the mic it used, and the prompt carries a warning if the take was too quiet (wrong mic, too far) or
-clipping (input volume too high). Prefer a fixed order? <code>"mic": ["AirPods Pro", "MacBook Pro Microphone"]</code>
+digest names the mic it used, and the prompt carries a warning if the take was muffled (too far from or turned away from the mic), clipping (input
+volume too high) or very quiet (wrong mic). The mic goes through Apple's voice-processing DSP by default
+(<code>"mic_mode": "voice"</code>, <code>"raw"</code> for the plain mic); it briefly switches the system input to the chosen mic
+during the take and restores it afterwards. Prefer a fixed order? <code>"mic": ["AirPods Pro", "MacBook Pro Microphone"]</code>
 uses the first one connected. <code>audio-input list|get|set &lt;name&gt;</code> (built by the installer) shows or switches
 the system input from the terminal.</details>
 

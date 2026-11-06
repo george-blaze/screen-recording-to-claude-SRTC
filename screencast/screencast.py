@@ -210,29 +210,60 @@ QUIET_PEAK_DB = -18.0   # speech into a mic you are actually using peaks well ab
 
 
 LAST_MEAN_DB = None
+LAST_AUDIO = {}
 QUIET_MEAN_DB = -40.0   # speech into a working mic averages about -25…-35 dB; below -40 it is mostly room noise
+HOT_PEAK_DB = -1.0      # at or above this the input is clipping
+MUFFLED_HF = 0.06       # share of speech energy above 1 kHz; clear speech into a mic is 0.10-0.25, a far/turned-away mic is 0.02-0.05
+CLIP_FRACTION = 0.002   # share of speech samples sitting in flat full-scale runs
+
+
+def analyze_audio(media, sr=16000):
+    """Level and spectral balance of the first audio stream, decoded with ffmpeg: dict(peak, mean, hf, clip, voiced) or {}.
+    hf is the share of speech energy above 1 kHz (consonant detail); clip is the share of speech samples in flat
+    full-scale runs (true clipping, not a single loud sample); voiced is how many seconds carried speech-level sound."""
+    try:
+        import numpy as np
+        r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(media), "-vn", "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"], capture_output=True)
+        x = np.frombuffer(r.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        if x.size < sr: return {}
+        peak = float(20 * np.log10(max(float(np.abs(x).max()), 1e-9)))
+        mean = float(20 * np.log10(max(float(np.sqrt(np.mean(x * x))), 1e-9)))
+        n = sr; win = np.hanning(n); fr = np.fft.rfftfreq(n, 1 / sr); hi = tot = 0.0; voiced = 0; clip = 0; vs = 0
+        for i in range(0, x.size - n + 1, n):
+            seg = x[i:i + n]
+            if np.sqrt(np.mean(seg * seg)) < 0.005: continue
+            f = np.abs(np.fft.rfft(seg * win)) ** 2
+            hi += float(f[fr >= 1000].sum()); tot += float(f[fr >= 80].sum()); voiced += 1; vs += n
+            a = (np.abs(seg) >= 0.985).astype(np.int8)
+            d = np.diff(np.concatenate(([0], a, [0]))); runs = np.where(d == -1)[0] - np.where(d == 1)[0]
+            clip += int(runs[runs >= 3].sum())
+        return {"peak": peak, "mean": mean, "hf": (hi / tot) if tot else None, "clip": (clip / vs) if vs else 0.0, "voiced": voiced}
+    except Exception as e:
+        print(f"  audio analysis skipped: {e}", flush=True); return {}
 
 
 def measure_peak_db(media):
-    """Peak level (dBFS) of the first audio stream, or None. Also records the mean level in LAST_MEAN_DB."""
-    global LAST_MEAN_DB
-    r = run(["ffmpeg", "-hide_banner", "-i", str(media), "-vn", "-af", "volumedetect", "-f", "null", "-"])
-    m = re.search(r"max_volume:\s*(-?[\d.]+) dB", r.stderr)
-    mm = re.search(r"mean_volume:\s*(-?[\d.]+) dB", r.stderr)
-    LAST_MEAN_DB = float(mm.group(1)) if mm else None
-    return float(m.group(1)) if m else None
-
-
-HOT_PEAK_DB = -1.0      # at or above this the input is clipping
+    """Peak level (dBFS) of the first audio stream, or None. Also records the mean level in LAST_MEAN_DB and the
+    full analysis in LAST_AUDIO."""
+    global LAST_MEAN_DB, LAST_AUDIO
+    LAST_AUDIO = analyze_audio(media)
+    LAST_MEAN_DB = LAST_AUDIO.get("mean")
+    return LAST_AUDIO.get("peak")
 
 
 def quiet_audio_note(peak_db, mic=None):
-    """Warning text when the recording is too quiet or clipping, else ''."""
-    mean = LAST_MEAN_DB
+    """Warning text when the recording is muffled, too quiet or clipping, else ''."""
+    st = LAST_AUDIO; mean = LAST_MEAN_DB
     who = f"'{mic}'" if mic else "the microphone"
-    if peak_db is not None and peak_db >= HOT_PEAK_DB and (mean is None or mean > QUIET_MEAN_DB):
-        return (f"audio is clipping (peak {peak_db:.0f} dB on {who}): lower that input's volume in System Settings → Sound → Input "
-                f"until the meter stays around two-thirds while you talk. Loud syllables may be garbled.")
+    hf = st.get("hf")
+    thin = hf is not None and st.get("voiced", 0) >= 5 and (hf < MUFFLED_HF or (hf < 2 * MUFFLED_HF and mean is not None and mean < -36))
+    if thin:
+        return (f"audio is muffled (only {hf * 100:.0f}% of the speech energy above 1 kHz on {who}: consonants did not reach the mic): "
+                f"you were far from or turned away from that microphone, or it is covered. Sit closer to it, point it at your mouth, "
+                f"or use AirPods/a headset (they win automatically when connected). Treat the words above as unreliable and rely on the frames.")
+    if peak_db is not None and peak_db >= HOT_PEAK_DB and st.get("clip", 0) >= CLIP_FRACTION:
+        return (f"audio is clipping ({st['clip'] * 100:.1f}% of speech samples flattened at full scale on {who}): lower that input's volume "
+                f"in System Settings → Sound → Input until the meter stays around two-thirds while you talk. Loud syllables may be garbled.")
     quiet_peak = peak_db is not None and peak_db <= QUIET_PEAK_DB
     quiet_mean = mean is not None and mean <= QUIET_MEAN_DB
     if not (quiet_peak or quiet_mean): return ""
@@ -241,6 +272,8 @@ def quiet_audio_note(peak_db, mic=None):
             f"(AirPods not connected to this Mac, or far from the mouth), so the transcript may be empty or garbled. "
             f"Check `mic` in ~/.config/vtc.json (\"default\" follows System Settings → Sound → Input). "
             f"Treat the words above as unreliable and rely on the frames and pointer sheets.")
+
+
 def finish(workdir, a, source, duration=None, asr=None, audio_peak_db=None, mic=None):
     """raw frames + small.raw (+ audio.wav) → kept frames → sheets → DIGEST.md"""
     t_all = time.time(); timings = {}
@@ -290,7 +323,7 @@ def finish(workdir, a, source, duration=None, asr=None, audio_peak_db=None, mic=
         lines.append(f"- `{sf}` — {hms(chunk[0])} → {hms(chunk[-1])}  (tiles: {', '.join(hms(s) for s in chunk)})")
     mic = mic or LAST_MIC_NAME
     note = quiet_audio_note(audio_peak_db, mic)
-    if audio_peak_db is not None: lines.insert(4, f"- mic: {mic or 'unknown'}  |  audio peak: {audio_peak_db:.0f} dB" + (f"  ⚠ {note}" if note else ""))
+    if audio_peak_db is not None: lines.insert(4, f"- mic: {mic or 'unknown'}  |  audio peak: {audio_peak_db:.0f} dB" + (f" | clarity: {LAST_AUDIO['hf'] * 100:.0f}% above 1 kHz" if LAST_AUDIO.get('hf') is not None else "") + (f"  ⚠ {note}" if note else ""))
     lines += ["", "## Transcript", ""] + ([f"⚠ {note}", ""] if note else []) + [transcript or "_(no speech / transcription disabled)_", ""]
     (workdir / "DIGEST.md").write_text("\n".join(lines))
     if note: (workdir / "audio_warning.txt").write_text(note); print(f"  ⚠ {note}")

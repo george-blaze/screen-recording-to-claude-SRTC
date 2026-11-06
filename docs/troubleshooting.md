@@ -35,15 +35,33 @@ means the microphone grant.
 
 ## Transcript empty or garbage
 
-The prompt and `DIGEST.md` carry an **audio peak / average** line. Speech into a working mic averages about −25 to
-−35 dB. Below −40 dB the live microphone was not the one you spoke into (AirPods on the desk, USB mic muted, wrong
-device selected); the prompt then tells Claude to rely on the frames. Fix `mic` in the config (see settings) and look
-at the input level meter in System Settings → Sound → Input while you talk.
+The prompt and `DIGEST.md` carry an audio line measured on the decoded take: **peak**, **average level**, **clarity**
+(the share of speech energy above 1 kHz) and true clipping (flat full-scale runs). The digest's `mic:` line reads e.g.
+`- mic: MacBook Pro Microphone | audio peak: -3 dB | clarity: 18% above 1 kHz`. Healthy speech into a mic is 10–25 %
+clarity. Three warnings, in priority order:
 
-Peak at 0 dB means clipping (the prompt says so): lower the input volume of that device in the same pane.
-The digest's `mic:` line names the device that was used. `./audio-input list` shows the system's inputs with the current
-default marked, `./audio-input set "MacBook Pro Microphone"` switches it; apps with voice processing (Slack, Zoom, FaceTime)
-can change the hardware gain of the input during a call, so check the level meter afterwards.
+- **Muffled**: clarity below 6 % (or below 12 % with an average under −36 dB). The speaker was far from or turned away
+  from the mic, or it is covered; consonants are missing. Sit closer, face the mic, or use AirPods/a headset (they win
+  automatically when connected).
+- **Clipping**: at least 0.2 % of speech samples flattened at full scale. Lower the input volume in System Settings →
+  Sound → Input.
+- **Very quiet**: peak at −18 dB or below, or average at −40 dB or below. Probably the wrong mic (AirPods on the desk,
+  USB mic muted); fix `mic` in the config (see settings) and watch the input level meter while you talk.
+
+While recording, the first 20-second chunk that contains speech is also checked: if it sounds muffled you get a macOS
+notification ("Mic sounds muffled…", Sosumi) so you can fix it before losing a long take.
+
+The digest names the device used. `./audio-input list` shows the system's inputs with the current default marked,
+`./audio-input set "MacBook Pro Microphone"` switches it; apps with voice processing (Slack, Zoom, FaceTime) can change
+the hardware gain of the input during a call, so check the level meter afterwards.
+
+### Transcript is garbage / only a few words, but the level warning says nothing or says clipping
+
+That was muffled audio: the level looked fine but there was almost no energy above 1 kHz (typical when sitting at an
+external monitor with the MacBook off to the side), and Whisper cannot transcribe speech without its consonants. Check
+the **clarity** number in `DIGEST.md`; below about 6 % is the cause. Fixes: sit closer, face the mic, use AirPods/a
+headset, and keep `"mic_mode": "voice"` (the default; the `miccap` voice-processing path restores the highs on the
+MacBook mic array). Also make sure macOS Voice Control is off: when on, it takes over the microphone.
 
 If levels are fine but the transcript is still poor, you are probably on the Apple fallback engine: check that
 `models/whisper-large-v3-turbo/weights.safetensors` is complete (1,613,977,612 bytes) and `asr` is `"stream"`.
@@ -72,3 +90,16 @@ grants silently. The installer signs automatically.
 rm -rf ~/.config/vtc.json "~/Library/Application Support/VideoToClaude"
 ```
 then `./install.sh` and the permission prompts again.
+
+## Check the mic before a long take
+
+Menu bar ○ → **Test microphone (5 s)** (or `python3 vtc.py mictest`). Talk normally for five seconds; the notification
+reports the mic used, its clarity (share of speech energy above 1 kHz, healthy is 10–25 %) and level, or the same
+muffled / clipping / quiet warning a take would carry. Do this whenever you change seats, headphones or monitors.
+
+## Whisper still gets nothing out of a take
+
+Switch the recognizer to the one VoiceOS uses: create a Deepgram API key (free credit at deepgram.com), then in
+`~/.config/vtc.json` set `"asr_engine": "deepgram"` and `"deepgram_api_key": "<key>"`. Chunks go to nova-3 over HTTPS
+while you record; nothing else changes.
+

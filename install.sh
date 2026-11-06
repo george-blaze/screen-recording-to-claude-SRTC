@@ -13,6 +13,7 @@ say "2/7 Building helpers"
 [ -x "$DIR/vtc-hotkey" ] || swiftc -O "$DIR/vtc-hotkey.swift" -o "$DIR/vtc-hotkey"
 [ -x "$DIR/paste" ] || swiftc -O "$DIR/paste.swift" -o "$DIR/paste"
 [ -x "$DIR/audio-input" ] || swiftc -O "$DIR/audio-input.swift" -o "$DIR/audio-input"
+[ -x "$DIR/miccap" ] || swiftc -O "$DIR/miccap.swift" -o "$DIR/miccap"
 [ -x "$DIR/screencast/sheet" ] || swiftc -O "$DIR/screencast/sheet.swift" -o "$DIR/screencast/sheet"
 [ -x "$DIR/screencast/transcribe" ] || swiftc -O "$DIR/screencast/transcribe.swift" -o "$DIR/screencast/transcribe"
 mkdir -p "$DIR/sounds"
@@ -29,7 +30,7 @@ if [ ! -f "$HOME/.config/vtc.json" ]; then
 import json, sys, os
 d = sys.argv[1]
 cfg = {"folder": os.path.expanduser("~"), "recordings": os.path.expanduser("~/Movies/SRTC"),
-       "screen": 0, "mic": "auto", "hotkey": "ctrl+cmd+s", "cap_seconds": 600, "warn_seconds": 20,
+       "screen": 0, "mic": "auto", "mic_mode": "voice", "hotkey": "ctrl+cmd+s", "cap_seconds": 600, "warn_seconds": 20,
        "asr": "stream", "deliver": "paste", "auto_send": False, "keep_days": 7, "keep_last": 30}
 json.dump(cfg, open(os.path.expanduser("~/.config/vtc.json"), "w"), indent=2)
 print("wrote ~/.config/vtc.json")

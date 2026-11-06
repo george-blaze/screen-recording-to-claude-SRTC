@@ -35,6 +35,11 @@ func runArgs(_ args: [String]) {
     do { try p.run() } catch { NSLog("vtc: failed to run vtc.py \(args): \(error)") }
 }
 func run(_ cmd: String) { runArgs([cmd]) }
+func notifyUser(_ title: String, _ text: String) {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    p.arguments = ["-e", "display notification \"\(text)\" with title \"\(title)\""]
+    do { try p.run() } catch { NSLog("vtc: failed to notify: \(error)") }
+}
 
 // ---------------- state ----------------
 struct State { var phase: String; var started: Double; var cap: Double; var warn: Double }
@@ -52,9 +57,28 @@ let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength
 let menu = NSMenu()
 let toggleItem = NSMenuItem(title: "Start recording", action: #selector(Ctl.toggle), keyEquivalent: "")
 let cancelItem = NSMenuItem(title: "Cancel recording (Esc)", action: #selector(Ctl.cancel), keyEquivalent: "")
+let micTestItem = NSMenuItem(title: "Test microphone (5 s)", action: #selector(Ctl.micTest), keyEquivalent: "")
+var micTesting = false
 class Ctl: NSObject {
     @objc func toggle() { run("toggle") }
     @objc func cancel() { run("cancel") }
+    @objc func micTest() {
+        guard !micTesting, readState()?.phase != "recording" else { return }
+        micTesting = true; micTestItem.isEnabled = false
+        item.button?.attributedTitle = attributed("◌ mic test", .labelColor)
+        DispatchQueue.global(qos: .userInitiated).async {
+            // runs `vtc.py mictest`: records 5 s, analyses, posts its own notification (~8 s total)
+            let p = Process(); p.executableURL = URL(fileURLWithPath: python); p.arguments = [vtc, "mictest"]
+            var failed = false
+            do { try p.run(); p.waitUntilExit(); failed = p.terminationStatus != 0 }
+            catch { NSLog("vtc: failed to run vtc.py mictest: \(error)"); failed = true }
+            DispatchQueue.main.async {
+                micTesting = false; micTestItem.isEnabled = true
+                if failed { notifyUser("SRTC", "Mic test failed — see runner.log") }
+                refresh()
+            }
+        }
+    }
     @objc func openFolder() { NSWorkspace.shared.open(URL(fileURLWithPath: (cfg()["recordings"] as? String) ?? (home.appendingPathComponent("Movies/SRTC").path))) }
     @objc func openSettings() { NSWorkspace.shared.open(cfgFile) }
     @objc func cleanOld() { run("clean") }
@@ -70,12 +94,14 @@ let ctl = Ctl()
 for mi in [toggleItem, cancelItem] { mi.target = ctl; menu.addItem(mi) }
 menu.addItem(.separator())
 let f = NSMenuItem(title: "Open recordings folder", action: #selector(Ctl.openFolder), keyEquivalent: ""); f.target = ctl; menu.addItem(f)
+micTestItem.target = ctl; menu.addItem(micTestItem)
 let s = NSMenuItem(title: "Settings (vtc.json)", action: #selector(Ctl.openSettings), keyEquivalent: ""); s.target = ctl; menu.addItem(s)
 menu.addItem(.separator())
 let c1 = NSMenuItem(title: "Delete recordings older than the keep period", action: #selector(Ctl.cleanOld), keyEquivalent: ""); c1.target = ctl; menu.addItem(c1)
 let c2 = NSMenuItem(title: "Delete all recordings…", action: #selector(Ctl.cleanAll), keyEquivalent: ""); c2.target = ctl; menu.addItem(c2)
 menu.addItem(.separator())
 let q = NSMenuItem(title: "Quit SRTC", action: #selector(Ctl.quit), keyEquivalent: ""); q.target = ctl; menu.addItem(q)
+menu.autoenablesItems = false  // we toggle micTestItem.isEnabled by hand
 item.menu = menu
 
 // countdown panel (last `warn` seconds), top-right, never takes focus
@@ -106,16 +132,16 @@ func refresh() {
         } else {
             item.button?.attributedTitle = attributed(String(format: "● %d:%02d", mm, ss), .systemRed); if panel.isVisible { panel.orderOut(nil) }
         }
-        toggleItem.title = "Stop recording"; cancelItem.isHidden = false
+        toggleItem.title = "Stop recording"; cancelItem.isHidden = false; micTestItem.isEnabled = false
     } else if let st = st, st.phase == "processing" {
         item.button?.attributedTitle = attributed("⟳ processing", .labelColor); if panel.isVisible { panel.orderOut(nil) }
-        toggleItem.title = "Start recording"; cancelItem.isHidden = true
+        toggleItem.title = "Start recording"; cancelItem.isHidden = true; micTestItem.isEnabled = !micTesting
     } else {
-        item.button?.attributedTitle = attributed("○", .labelColor); if panel.isVisible { panel.orderOut(nil) }
-        toggleItem.title = "Start recording"; cancelItem.isHidden = true
+        item.button?.attributedTitle = attributed(micTesting ? "◌ mic test" : "○", .labelColor); if panel.isVisible { panel.orderOut(nil) }
+        toggleItem.title = "Start recording"; cancelItem.isHidden = true; micTestItem.isEnabled = !micTesting
     }
     // macOS blocks every global hotkey while an app holds secure keyboard input (a focused password field)
-    if IsSecureEventInputEnabled() && (st == nil) {
+    if IsSecureEventInputEnabled() && (st == nil) && !micTesting {
         item.button?.attributedTitle = attributed("○ hotkey blocked: password field", .systemOrange)
     }
     let phase = st?.phase ?? "idle"

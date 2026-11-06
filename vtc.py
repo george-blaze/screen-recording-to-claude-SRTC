@@ -25,6 +25,8 @@ DEFAULTS = {
     "recordings": str(Path.home() / "Movies" / "SRTC"),
     "screen": 0,
     "mic": "auto",                            # auto = headphones/headset if connected, else the system input; or a name, a priority list, or "none"
+    "mic_mode": "voice",                      # voice = Apple voice-processing capture via miccap (beamforming, auto gain, noise suppression) | raw = plain mic
+    "asr_engine": "whisper",                  # whisper (local, asr_worker.py) | deepgram (cloud nova-3, asr_deepgram.py + DEEPGRAM_API_KEY)
     "cap_seconds": 600,                       # 10 min, same as Claude's native recorder
     "warn_seconds": 20,                       # sound + notification this long before the cap
     "fps": 5, "width": 1920,
@@ -75,23 +77,59 @@ def alive(pid):
 
 
 # ------------------------------------------------------------------ record ---
-def ffmpeg_cmd(c, out):
+MICCAP = HERE / "miccap"
+
+
+def use_miccap(c):
+    return c.get("mic_mode", "voice") == "voice" and MICCAP.exists()
+
+
+def ffmpeg_cmd(c, out, piped_mic=False):
+    """Screen (+ raw mic) recorder. With piped_mic the mic is captured separately (see audio_cmd) and muxed in afterwards:
+    avfoundation and a pipe run on different clocks, and a muxer waiting for them to line up stalls for good."""
     from screencast import resolve_inputs
     spec, has_audio = resolve_inputs(c["screen"], c["mic"])
     vidx, aidx = spec.split(":")
+    raw_mic = has_audio and not piped_mic
     # screen and mic as two separate inputs: sharing one avfoundation input drops ~75% of mic buffers
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "avfoundation",
            "-capture_cursor", "1", "-capture_mouse_clicks", "1", "-framerate", "15", "-i", f"{vidx}:none"]
-    if has_audio:
+    if raw_mic:
         cmd += ["-f", "avfoundation", "-thread_queue_size", "4096", "-i", f":{aidx}", "-map", "0:v", "-map", "1:a",
                 "-af", "aresample=async=1:first_pts=0", "-c:a", "aac", "-b:a", "96k"]
     cmd += ["-t", str(c["cap_seconds"]), "-vf", f"fps={c['fps']},scale={c['width']}:-2,format=yuv420p",
             "-c:v", "h264_videotoolbox", "-b:v", "4M", "-realtime", "1", "-movflags", "+faststart", str(out)]
-    if has_audio and c["asr"] == "stream":   # second output: 16 kHz mono wav chunks, transcribed while you talk
+    if raw_mic and c["asr"] == "stream":   # second output: 16 kHz mono wav chunks, transcribed while you talk
         chunks = out.with_suffix(".chunks"); chunks.mkdir(exist_ok=True)
-        cmd += ["-map", "1:a", "-af", "aresample=async=1:first_pts=0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11", "-ac", "1", "-ar", "16000",
+        cmd += ["-map", "1:a", "-t", str(c["cap_seconds"]), "-af", CHUNK_FILTER, "-ac", "1", "-ar", "16000",
                 "-f", "segment", "-segment_time", str(c["chunk_seconds"]), "-reset_timestamps", "1", str(chunks / "%04d.wav")]
     return cmd
+
+
+CHUNK_FILTER = "aresample=async=1:first_pts=0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11"
+
+
+def audio_cmd(c, out):
+    """Mic-only ffmpeg fed by miccap on stdin: full-length wav (muxed into the mp4 at stop) + live 16 kHz chunks."""
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "s16le", "-ar", "48000", "-ac", "1",
+           "-thread_queue_size", "4096", "-i", "pipe:0",
+           "-map", "0:a", "-t", str(c["cap_seconds"]), "-c:a", "pcm_s16le", str(out.with_suffix(".wav"))]
+    if c["asr"] == "stream":
+        chunks = out.with_suffix(".chunks"); chunks.mkdir(exist_ok=True)
+        cmd += ["-map", "0:a", "-t", str(c["cap_seconds"]), "-af", CHUNK_FILTER, "-ac", "1", "-ar", "16000",
+                "-f", "segment", "-segment_time", str(c["chunk_seconds"]), "-reset_timestamps", "1", str(chunks / "%04d.wav")]
+    return cmd
+
+
+def mux_audio(video, wav):
+    """Put the separately captured wav into the mp4 (video copied, audio → aac). Returns True on success."""
+    tmp = video.with_name(video.stem + ".mux.mp4")
+    r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(wav),
+                        "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k",
+                        "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(tmp)], capture_output=True, text=True)
+    if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 1024:
+        print(f"mux failed: {r.stderr.strip()[-200:]}", flush=True); tmp.unlink(missing_ok=True); return False
+    tmp.replace(video); return True
 
 
 def screencapture_cmd(c, out):
@@ -117,30 +155,65 @@ def cmd_start(c):
 def cmd_run(c, out):
     """The detached runner."""
     out = Path(out); backend = c["backend"]
-    def launch(b):
-        cmd = ffmpeg_cmd(c, out) if b == "ffmpeg" else screencapture_cmd(c, out)
+    import screencast as _sc
+    mic_p = aud_p = None
+    def stop_mic():
+        nonlocal mic_p, aud_p
+        for q, sig in ((aud_p, signal.SIGINT), (mic_p, signal.SIGTERM)):      # ffmpeg finalizes the wav; miccap restores the default input
+            if q is not None and q.poll() is None:
+                try: q.send_signal(sig); q.wait(timeout=5)
+                except Exception:
+                    try: q.kill()
+                    except Exception: pass
+        mic_p = aud_p = None
+    def launch(b, voice=True):
+        nonlocal mic_p, aud_p
+        stop_mic()
+        piped = b == "ffmpeg" and voice and use_miccap(c) and c["mic"] not in (None, "", "none")
+        cmd = ffmpeg_cmd(c, out, piped_mic=piped) if b == "ffmpeg" else screencapture_cmd(c, out)
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-{b}.log", "w"))
-        import screencast as _sc
-        STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "backend": b, "phase": "recording", "mic": _sc.LAST_MIC_NAME,
-                                     "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")), "started": time.time()}))
+        if piped:
+            time.sleep(0.8)                      # avfoundation takes about a second to deliver its first frame; start the mic then
+            mic_p = subprocess.Popen([str(MICCAP), "--device", _sc.LAST_MIC_NAME], stdout=subprocess.PIPE, stderr=open(STATE_DIR / "miccap.log", "w"))
+            aud_p = subprocess.Popen(audio_cmd(c, out), stdin=mic_p.stdout, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / "recorder-audio.log", "w"))
+            mic_p.stdout.close()                 # the audio ffmpeg owns the read end; miccap sees EPIPE when it stops
+        STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "mic_pid": mic_p.pid if mic_p else None,
+                                     "audio_pid": aud_p.pid if aud_p else None, "backend": b, "phase": "recording", "mic": _sc.LAST_MIC_NAME,
+                                     "mic_mode": "voice" if piped else "raw", "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")),
+                                     "started": time.time()}))
         return p
+    def kill_rec(p):
+        try: p.send_signal(signal.SIGINT); p.wait(timeout=3)
+        except Exception:
+            try: p.kill(); p.wait(timeout=2)
+            except Exception: pass
+    def first_bytes(p, f, secs):
+        for _ in range(int(secs * 2)):
+            time.sleep(0.5)
+            if p.poll() is not None: return False
+            if f.exists() and f.stat().st_size >= 1024: return True
+        return False
     t0 = time.time()
     p = launch("ffmpeg" if backend in ("auto", "ffmpeg") else "screencapture")
     notify("SRTC", "Recording. Press the hotkey again to stop.", SOUND_START)
-    if backend == "auto":
-        f = out; ok = False
-        for _ in range(24):                       # up to 12 s for the first bytes (USB mics can take a few seconds to open)
-            time.sleep(0.5)
-            if p.poll() is not None: break
-            if f.exists() and f.stat().st_size >= 1024: ok = True; break
+    if mic_p is not None:
+        # voice-processed mic must be producing within a few seconds, else record with the plain mic
+        ok = first_bytes(aud_p, out.with_suffix(".wav"), 6) and mic_p.poll() is None and aud_p.poll() is None
         if not ok:
-            err = (STATE_DIR / "recorder-ffmpeg.log").read_text().strip().splitlines()
-            last = err[-1] if err else "no frames arrived (Screen Recording / Microphone permission for vtc-hotkey?)"
-            try: p.send_signal(signal.SIGINT); p.wait(timeout=3)
-            except Exception: p.kill()
-            print(f"ffmpeg produced no data in 6 s: {last} → falling back to screencapture")
-            notify("SRTC", f"ffmpeg failed: {last[:90]} — trying Apple recorder", "/System/Library/Sounds/Sosumi.aiff")
-            p = launch("screencapture"); t0 = time.time()
+            err = (STATE_DIR / "miccap.log").read_text().strip().splitlines() if (STATE_DIR / "miccap.log").exists() else []
+            why = err[-1] if err else "no audio arrived"
+            kill_rec(p); out.unlink(missing_ok=True); out.with_suffix(".wav").unlink(missing_ok=True)
+            shutil.rmtree(out.with_suffix(".chunks"), ignore_errors=True)
+            print(f"miccap failed ({why}) → raw mic", flush=True)
+            notify("SRTC", f"Voice-processed mic failed ({why[:60]}); recording with the plain mic.", SOUND_ALERT)
+            p = launch("ffmpeg", voice=False); t0 = time.time()
+    if backend == "auto" and not first_bytes(p, out, 12):   # up to 12 s for the first bytes (USB mics can take a few seconds to open)
+        err = (STATE_DIR / "recorder-ffmpeg.log").read_text().strip().splitlines()
+        last = err[-1] if err else "no frames arrived (Screen Recording / Microphone permission for vtc-hotkey?)"
+        kill_rec(p)
+        print(f"ffmpeg produced no data in 12 s: {last} → falling back to screencapture", flush=True)
+        notify("SRTC", f"ffmpeg failed: {last[:90]} — trying Apple recorder", SOUND_ALERT)
+        p = launch("screencapture"); t0 = time.time()
     warned = False; warn_proc = None
     stream = StreamASR(out.with_suffix(".chunks"), c) if (c["asr"] == "stream" and (read_state() or {}).get("backend") == "ffmpeg") else None
     while p.poll() is None:
@@ -149,22 +222,32 @@ def cmd_run(c, out):
             warned = True
             warn_proc = subprocess.Popen(["afplay", c.get("warn_sound") or SOUND_WARN])
             notify("SRTC", f"{c['warn_seconds']} seconds left")
-        if stream: stream.poll()
+        if stream:
+            try: stream.poll()
+            except Exception as e:
+                print(f"live transcription stopped: {e}", flush=True); notify("SRTC", "Live transcription stopped; the take is still recording."); stream = None
         time.sleep(0.5)
     if warn_proc is not None and warn_proc.poll() is None: warn_proc.kill()   # stopped early: silence the countdown
+    piped_wav = out.with_suffix(".wav") if aud_p is not None else None
+    stop_mic()
     st = read_state() or {}
     st["phase"] = "processing"; STATE.write_text(json.dumps(st))
     video = Path(st.get("file", out))
     if not video.exists() or video.stat().st_size < 1024:
         notify("SRTC", "Nothing was recorded: grant Screen Recording + Microphone to vtc-hotkey (System Settings → Privacy & Security).", SOUND_ALERT)
         shutil.rmtree(out.with_suffix(".chunks"), ignore_errors=True)
+        if piped_wav: piped_wav.unlink(missing_ok=True)
         STATE.unlink(missing_ok=True); return
+    if piped_wav is not None:
+        if piped_wav.exists() and piped_wav.stat().st_size > 48000 and mux_audio(video, piped_wav): piped_wav.unlink(missing_ok=True)
+        else: notify("SRTC", "No microphone audio was captured for this take.", SOUND_ALERT)
     ev = STATE_DIR / "events.jsonl"
     if ev.exists():
         ev.replace(video.with_suffix(".events.jsonl"))
     notify("SRTC", "Processing…")
     try:
-        transcript = stream.finish() if stream else None
+        try: transcript = stream.finish() if stream else None
+        except Exception as e: print(f"transcript failed: {e}", flush=True); transcript = None
         finish(c, video, transcript=transcript, mic=st.get('mic'))
         prune(c)
     finally:
@@ -176,18 +259,62 @@ def cmd_stop(c):
     if not st or not alive(st.get("recorder_pid", -1)):
         print("not recording"); STATE.unlink(missing_ok=True); return
     os.kill(st["recorder_pid"], signal.SIGINT)   # ffmpeg / screencapture finalize the file on SIGINT
+    if alive(st.get("audio_pid") or -1):
+        try: os.kill(st["audio_pid"], signal.SIGINT)
+        except OSError: pass
     print("■ stopping; the runner will digest and deliver")
 
 
 def cmd_cancel(c):
     st = read_state()
     if not st: print("not recording"); return
-    for k in ("recorder_pid", "runner_pid"):
-        if alive(st.get(k, -1)):
+    for k in ("recorder_pid", "audio_pid", "runner_pid"):
+        if alive(st.get(k) or -1):
             try: os.kill(st[k], signal.SIGKILL)
             except OSError: pass
-    Path(st.get("file", "")).unlink(missing_ok=True); STATE.unlink(missing_ok=True)
+    if alive(st.get("mic_pid") or -1):
+        try: os.kill(st["mic_pid"], signal.SIGTERM)          # lets miccap restore the previous default input
+        except OSError: pass
+    f = Path(st.get("file", "")); f.unlink(missing_ok=True); f.with_suffix(".wav").unlink(missing_ok=True)
+    shutil.rmtree(f.with_suffix(".chunks"), ignore_errors=True); STATE.unlink(missing_ok=True)
     notify("SRTC", "Recording cancelled"); print("cancelled")
+
+
+def cmd_mictest(c):
+    """Record 5 s through the configured mic (voice-processed when mic_mode=voice), analyse it, notify the verdict."""
+    import screencast as _sc
+    if read_state() and alive((read_state() or {}).get("recorder_pid", -1)): print("recording in progress"); return
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _sc.resolve_inputs(c["screen"], c["mic"]); mic = _sc.LAST_MIC_NAME
+    if not mic: print("mic is 'none'"); return
+    wav = STATE_DIR / "mictest.wav"; wav.unlink(missing_ok=True)
+    notify("SRTC", f"Mic test: talk normally for 5 seconds ({mic})", SOUND_START)
+    if use_miccap(c):
+        mp = subprocess.Popen([str(MICCAP), "--device", mic, "--seconds", "5"], stdout=subprocess.PIPE, stderr=open(STATE_DIR / "miccap.log", "w"))
+        ff = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", "pipe:0", "-ac", "1", "-ar", "16000", str(wav)],
+                              stdin=mp.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        mp.stdout.close(); mode = "voice"
+        try: ff.wait(timeout=20); mp.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            for q in (ff, mp):
+                try: q.kill(); q.wait(timeout=2)
+                except Exception: pass
+    else:
+        spec, _ = _sc.resolve_inputs(c["screen"], c["mic"]); aidx = spec.split(":")[1]
+        try: subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "avfoundation", "-i", f":{aidx}", "-t", "5", "-ac", "1", "-ar", "16000", str(wav)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=20)
+        except subprocess.TimeoutExpired: pass
+        mode = "raw"
+    if not wav.exists() or wav.stat().st_size < 32000:
+        err = (STATE_DIR / "miccap.log").read_text().strip().splitlines() if (STATE_DIR / "miccap.log").exists() else []
+        msg = f"Mic test failed: nothing captured from {mic}" + (f" ({err[-1][:70]})" if err else "")
+        notify("SRTC", msg, SOUND_ALERT); print(msg); sys.exit(1)
+    pk = _sc.measure_peak_db(wav); st = _sc.LAST_AUDIO; note = _sc.quiet_audio_note(pk, mic)
+    clarity = f"{st['hf'] * 100:.0f}%" if st.get("hf") is not None else "n/a"
+    if st.get("voiced", 0) == 0: verdict = f"Mic test: heard nothing on {mic} (talk during the 5 s, or pick another mic)"
+    elif note: verdict = f"Mic test: {note.split(':')[0]} on {mic} — clarity {clarity}, level {st['mean']:.0f} dB"
+    else: verdict = f"Mic test OK on {mic}: clarity {clarity}, level {st['mean']:.0f} dB ({mode})"
+    print(verdict); notify("SRTC", verdict, SOUND_DONE if not note and st.get("voiced") else SOUND_ALERT)
 
 
 def cmd_toggle(c):
@@ -311,9 +438,13 @@ class StreamASR:
     def __init__(self, chunks, c):
         self.chunks, self.c, self.done, self.results = Path(chunks), c, set(), {}
         env = dict(os.environ, VTC_WHISPER_LANGUAGE=c.get("language") or "")
-        self.worker = subprocess.Popen(["uv", "run", "-q", "--with", "mlx-whisper", "python", str(HERE / "asr_worker.py")],
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(STATE_DIR / "asr.log", "a"), text=True, env=env)
+        if c.get("asr_engine", "whisper") == "deepgram" and (HERE / "asr_deepgram.py").exists():
+            wcmd = ["uv", "run", "-q", "python", str(HERE / "asr_deepgram.py")]
+        else:
+            wcmd = ["uv", "run", "-q", "--with", "mlx-whisper", "python", str(HERE / "asr_worker.py")]
+        self.worker = subprocess.Popen(wcmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(STATE_DIR / "asr.log", "a"), text=True, env=env)
         self.pending = 0
+        self.voiced_chunks = 0; self.thin_run = 0; self.muffled_warned = False
     def _finished_chunks(self, final=False):
         files = sorted(self.chunks.glob("*.wav"))
         return files if final else files[:-1]            # the newest chunk is still being written
@@ -329,6 +460,38 @@ class StreamASR:
         if sg.get("nsp", 0) > 0.6 or sg.get("lp", 0) < -1.0 or sg.get("cr", 0) > 2.4: return False
         if re.search(r"\b(\w+)(?:\W+\1\b){3,}", t, re.I): return False       # "can can can can"
         return True
+
+    MUFFLED_HF_FIRST = 0.05     # first speech chunk below this → warn at once (normalized chunks: clear speech 0.12-0.25, far mic 0.02-0.05)
+    MUFFLED_HF_RUN = 0.07       # two speech chunks in a row below this → warn
+
+    @staticmethod
+    def chunk_hf(path):
+        """Share of speech energy above 1 kHz in a chunk, or None (no speech)."""
+        import numpy as np
+        try:
+            x = np.fromfile(path, dtype=np.int16, offset=44).astype(np.float32) / 32768.0
+            n = 16000; win = np.hanning(n); fr = np.fft.rfftfreq(n, 1 / n); hi = tot = 0.0
+            for i in range(0, x.size - n + 1, n):
+                seg = x[i:i + n]
+                if np.sqrt(np.mean(seg * seg)) < 0.005: continue
+                f = np.abs(np.fft.rfft(seg * win)) ** 2
+                hi += float(f[fr >= 1000].sum()); tot += float(f[fr >= 80].sum())
+            return (hi / tot) if tot else None
+        except Exception:
+            return None
+
+    def live_check(self, f):
+        """While recording: warn once, early, when the mic sounds muffled (far away / turned away / covered)."""
+        if self.muffled_warned: return
+        hf = self.chunk_hf(f)
+        if hf is None: return
+        self.voiced_chunks += 1
+        self.thin_run = self.thin_run + 1 if hf < self.MUFFLED_HF_RUN else 0
+        if (self.voiced_chunks == 1 and hf < self.MUFFLED_HF_FIRST) or self.thin_run >= 2:
+            self.muffled_warned = True
+            mic = (read_state() or {}).get("mic") or "the mic"
+            print(f"  ⚠ live: muffled audio (clarity {hf * 100:.0f}%) on {mic}", flush=True)
+            notify("SRTC", f"Mic sounds muffled on {mic}: sit closer / face it, or put AirPods in. Transcript will suffer.", SOUND_ALERT)
 
     @staticmethod
     def chunk_rms_db(path):
@@ -347,6 +510,7 @@ class StreamASR:
                 self.done.add(f)
                 if self.chunk_rms_db(f) < self.SILENCE_RMS_DB:
                     self.results[f] = []; continue
+                self.live_check(f)
                 self.worker.stdin.write(str(f) + "\n"); self.worker.stdin.flush(); self.pending += 1
         self._drain(block=False)
     def _drain(self, block):
@@ -480,4 +644,4 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "toggle"
     if cmd == "_run": cmd_run(c, sys.argv[2])
     elif cmd == "finish": finish(c, Path(sys.argv[2]).expanduser().resolve())
-    else: {"toggle": cmd_toggle, "start": cmd_start, "stop": cmd_stop, "cancel": cmd_cancel, "status": cmd_status, "clean": cmd_clean, "usage": cmd_usage}[cmd](c)
+    else: {"toggle": cmd_toggle, "start": cmd_start, "stop": cmd_stop, "cancel": cmd_cancel, "status": cmd_status, "clean": cmd_clean, "usage": cmd_usage, "mictest": cmd_mictest}[cmd](c)

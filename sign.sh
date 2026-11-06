@@ -16,7 +16,7 @@ if ! security find-identity -v -p codesigning | grep -q "$NAME"; then
   rm -rf "$TMP"
   echo "✔ created signing certificate \"$NAME\" in your login keychain"
 fi
-for b in vtc-hotkey paste audio-input transcribe sheet; do
+for b in vtc-hotkey paste audio-input miccap transcribe sheet; do
   [ -f "$DIR/screencast/$b" ] && f="$DIR/screencast/$b" || f="$DIR/$b"
   [ -f "$f" ] || continue
   codesign --force --sign "$NAME" --identifier "com.videotoclaude.$b" --timestamp=none "$f" 2>&1 | grep -v "replacing existing" || true
