@@ -113,10 +113,10 @@ def audio_cmd(c, out):
     """Mic-only ffmpeg fed by miccap on stdin: full-length wav (muxed into the mp4 at stop) + live 16 kHz chunks."""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "s16le", "-ar", "48000", "-ac", "1",
            "-thread_queue_size", "4096", "-i", "pipe:0",
-           "-map", "0:a", "-t", str(c["cap_seconds"]), "-c:a", "pcm_s16le", str(out.with_suffix(".wav"))]
+           "-map", "0:a", "-t", str(c["cap_seconds"] + 15), "-c:a", "pcm_s16le", str(out.with_suffix(".wav"))]   # runner stops it 1 s after the screen
     if c["asr"] == "stream":
         chunks = out.with_suffix(".chunks"); chunks.mkdir(exist_ok=True)
-        cmd += ["-map", "0:a", "-t", str(c["cap_seconds"]), "-af", CHUNK_FILTER, "-ac", "1", "-ar", "16000",
+        cmd += ["-map", "0:a", "-t", str(c["cap_seconds"] + 15), "-af", CHUNK_FILTER, "-ac", "1", "-ar", "16000",
                 "-f", "segment", "-segment_time", str(c["chunk_seconds"]), "-reset_timestamps", "1", str(chunks / "%04d.wav")]
     return cmd
 
@@ -127,13 +127,13 @@ def media_duration(path):
     except ValueError: return None
 
 
-def mux_audio(video, wav):
-    """Put the separately captured wav into the mp4 (video copied, audio → aac). Both stopped together, so the mic started
-    (video length - audio length) seconds after the screen: the audio is shifted by that much so transcript times match the
-    frame stamps. Returns the shift in seconds, or None on failure."""
+def mux_audio(video, wav, tail=0.0):
+    """Put the separately captured wav into the mp4 (video copied, audio → aac). The mic ran `tail` seconds past the end of
+    the screen, so it started (video length - (audio length - tail)) seconds after the screen: the audio is shifted by that
+    much so transcript times match the frame stamps. Returns the shift in seconds, or None on failure."""
     tmp = video.with_name(video.stem + ".mux.mp4")
     vd, ad = media_duration(video), media_duration(wav)
-    delta = round(vd - ad, 3) if (vd and ad and -8 < vd - ad < 8) else 0.0
+    delta = round(vd - (ad - tail), 3) if (vd and ad and -8 < vd - (ad - tail) < 8) else 0.0
     # delta > 0: mic started after the screen → delay the audio; delta < 0: mic was live before the first frame → trim its head
     ain = (["-itsoffset", str(delta)] if delta > 0 else ["-ss", str(-delta)] if delta < 0 else []) + ["-i", str(wav)]
     r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video)] + ain + [
@@ -239,9 +239,14 @@ def cmd_run(c, out):
             try: stream.poll()
             except Exception as e:
                 print(f"live transcription stopped: {e}", flush=True); notify("SRTC", "Live transcription stopped; the take is still recording."); stream = None
-        time.sleep(0.5)
+        time.sleep(0.2)
+    t_end = time.time()
     if warn_proc is not None and warn_proc.poll() is None: warn_proc.kill()   # stopped early: silence the countdown
     piped_wav = out.with_suffix(".wav") if aud_p is not None else None
+    tail = 0.0
+    if aud_p is not None and aud_p.poll() is None:
+        time.sleep(1.0)                                   # people press stop while finishing the sentence
+        tail = time.time() - t_end
     stop_mic()
     st = read_state() or {}
     st["phase"] = "processing"; STATE.write_text(json.dumps(st))
@@ -252,7 +257,7 @@ def cmd_run(c, out):
         if piped_wav: piped_wav.unlink(missing_ok=True)
         STATE.unlink(missing_ok=True); return
     if piped_wav is not None:
-        delta = mux_audio(video, piped_wav) if piped_wav.exists() and piped_wav.stat().st_size > 48000 else None
+        delta = mux_audio(video, piped_wav, tail) if piped_wav.exists() and piped_wav.stat().st_size > 48000 else None
         if delta is None: notify("SRTC", "No microphone audio was captured for this take.", SOUND_ALERT)
         else:
             piped_wav.unlink(missing_ok=True)
@@ -264,7 +269,7 @@ def cmd_run(c, out):
     try:
         try: transcript = stream.finish() if stream else None
         except Exception as e: print(f"transcript failed: {e}", flush=True); transcript = None
-        finish(c, video, transcript=transcript, mic=st.get('mic'))
+        finish(c, video, transcript=transcript, mic=st.get('mic'), mic_mode=st.get("mic_mode"), asr_quality=getattr(stream, "quality", None))
         prune(c)
     finally:
         STATE.unlink(missing_ok=True)
@@ -274,10 +279,7 @@ def cmd_stop(c):
     st = read_state()
     if not st or not alive(st.get("recorder_pid", -1)):
         print("not recording"); STATE.unlink(missing_ok=True); return
-    os.kill(st["recorder_pid"], signal.SIGINT)   # ffmpeg / screencapture finalize the file on SIGINT
-    if alive(st.get("audio_pid") or -1):
-        try: os.kill(st["audio_pid"], signal.SIGINT)
-        except OSError: pass
+    os.kill(st["recorder_pid"], signal.SIGINT)   # ffmpeg / screencapture finalize the file on SIGINT; the runner stops the mic 1 s later
     print("■ stopping; the runner will digest and deliver")
 
 
@@ -389,7 +391,7 @@ def cmd_usage(c):
 
 
 # ----------------------------------------------------------------- deliver ---
-def finish(c, video, transcript=None, mic=None):
+def finish(c, video, transcript=None, mic=None, mic_mode=None, asr_quality=None):
     import argparse
     from screencast import digest
     asr = {"stream": "mlx", "auto": "auto", "mlx": "mlx", "apple": "apple", "none": "none"}[c["asr"]]
@@ -400,6 +402,7 @@ def finish(c, video, transcript=None, mic=None):
     if transcript is not None: (workdir / "transcript.txt").write_text(transcript)
     import screencast as _sc
     _sc.LAST_MIC_NAME = mic or _sc.LAST_MIC_NAME
+    _sc.MIC_MODE = mic_mode or c.get("mic_mode", "voice"); _sc.ASR_QUALITY = asr_quality
     digest(video, workdir, a)
     transcript = (workdir / "transcript.txt").read_text().strip() if (workdir / "transcript.txt").exists() else ""
     sheets = sorted((workdir / "sheets").glob("sheet_*.jpg"))
@@ -477,8 +480,9 @@ class StreamASR:
         if re.search(r"\b(\w+)(?:\W+\1\b){3,}", t, re.I): return False       # "can can can can"
         return True
 
-    MUFFLED_HF_FIRST = 0.05     # first speech chunk below this → warn at once (normalized chunks: clear speech 0.12-0.25, far mic 0.02-0.05)
-    MUFFLED_HF_RUN = 0.07       # two speech chunks in a row below this → warn
+    # normalized chunks: clear speech 0.12-0.25, a far/turned-away mic 0.02-0.05. Voice processing (noise suppression)
+    # trims the top end even on clear speech (built-in mic: ~0.06 with a perfect transcript), so its bar is lower.
+    MUFFLED_HF = {"raw": (0.05, 0.07), "voice": (0.03, 0.045)}   # (first speech chunk, two in a row)
 
     @staticmethod
     def chunk_hf(path):
@@ -502,10 +506,12 @@ class StreamASR:
         hf = self.chunk_hf(f)
         if hf is None: return
         self.voiced_chunks += 1
-        self.thin_run = self.thin_run + 1 if hf < self.MUFFLED_HF_RUN else 0
-        if (self.voiced_chunks == 1 and hf < self.MUFFLED_HF_FIRST) or self.thin_run >= 2:
+        st = read_state() or {}
+        first, run = self.MUFFLED_HF.get(st.get("mic_mode") or "voice", self.MUFFLED_HF["voice"])
+        self.thin_run = self.thin_run + 1 if hf < run else 0
+        if (self.voiced_chunks == 1 and hf < first) or self.thin_run >= 2:
             self.muffled_warned = True
-            mic = (read_state() or {}).get("mic") or "the mic"
+            mic = st.get("mic") or "the mic"
             print(f"  ⚠ live: muffled audio (clarity {hf * 100:.0f}%) on {mic}", flush=True)
             notify("SRTC", f"Mic sounds muffled on {mic}: sit closer / face it, or put AirPods in. Transcript will suffer.", SOUND_ALERT)
 
@@ -543,7 +549,7 @@ class StreamASR:
         time.sleep(0.3); self.poll(final=True); self._drain(block=True)
         try: self.worker.stdin.close(); self.worker.wait(timeout=5)
         except Exception: self.worker.kill()
-        lines = []
+        lines = []; words = 0; lps = []
         for i, f in enumerate(sorted(self.chunks.glob("*.wav"))):
             base = i * self.c["chunk_seconds"] + getattr(self, "offset", 0.0)
             segs = [sg for sg in self.results.get(f, []) if self.plausible(sg)]
@@ -553,6 +559,8 @@ class StreamASR:
             segs = [sg for sg in segs if len(sg["text"].strip().strip(".,!? ")) > 2 or len(segs) == 1 and len(texts[0]) > 2]
             for sgm in segs:
                 t = max(0.0, base + sgm["start"]); lines.append(f"[{int(t) // 60:02d}:{int(t) % 60:02d}] {sgm['text']}")
+                words += len(sgm["text"].split()); lps.append(sgm.get("lp", -1.0))
+        self.quality = {"words": words, "lp": (sum(lps) / len(lps)) if lps else None}
         shutil.rmtree(self.chunks, ignore_errors=True)
         return "\n".join(lines)
 

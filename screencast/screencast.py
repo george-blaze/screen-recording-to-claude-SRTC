@@ -211,6 +211,8 @@ QUIET_PEAK_DB = -18.0   # speech into a mic you are actually using peaks well ab
 
 LAST_MEAN_DB = None
 LAST_AUDIO = {}
+MIC_MODE = None         # "voice" (miccap, voice-processed) | "raw" — set by vtc.py; voice processing trims the top end even on clear speech
+ASR_QUALITY = None      # {"words": n, "lp": mean log-prob} of the live transcript, set by vtc.py; a confident transcript overrides the spectral guess
 QUIET_MEAN_DB = -40.0   # speech into a working mic averages about -25…-35 dB; below -40 it is mostly room noise
 HOT_PEAK_DB = -1.0      # at or above this the input is clipping
 MUFFLED_HF = 0.06       # share of speech energy above 1 kHz; clear speech into a mic is 0.10-0.25, a far/turned-away mic is 0.02-0.05
@@ -256,7 +258,11 @@ def quiet_audio_note(peak_db, mic=None):
     st = LAST_AUDIO; mean = LAST_MEAN_DB
     who = f"'{mic}'" if mic else "the microphone"
     hf = st.get("hf")
-    thin = hf is not None and st.get("voiced", 0) >= 5 and (hf < MUFFLED_HF or (hf < 2 * MUFFLED_HF and mean is not None and mean < -36))
+    bar = 0.035 if MIC_MODE == "voice" else MUFFLED_HF
+    thin = hf is not None and st.get("voiced", 0) >= 5 and (hf < bar or (MIC_MODE != "voice" and hf < 2 * MUFFLED_HF and mean is not None and mean < -36))
+    q = ASR_QUALITY or {}
+    if thin and q.get("words", 0) >= 8 and (q.get("lp") or -9) > -0.6:
+        thin = False                       # Whisper was confident across a real sentence: the words are fine, however thin the spectrum
     if thin:
         return (f"audio is muffled (only {hf * 100:.0f}% of the speech energy above 1 kHz on {who}: consonants did not reach the mic): "
                 f"you were far from or turned away from that microphone, or it is covered. Sit closer to it, point it at your mouth, "
