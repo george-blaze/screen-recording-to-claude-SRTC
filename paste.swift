@@ -27,6 +27,10 @@ guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "
 }
 app.activate(options: [.activateAllWindows])
 usleep(700_000)
+let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
+if front != "com.anthropic.claudefordesktop" {
+    FileHandle.standardError.write("Claude did not come to the front (frontmost: \(front)); nothing pasted\n".data(using: .utf8)!); exit(3)
+}
 
 let pb = NSPasteboard.general
 var pasted = 0
@@ -45,4 +49,4 @@ pb.setString(text, forType: .string)
 keystroke(9, .maskCommand)
 usleep(400_000)
 if send { keystroke(36 /* Return */, []) }
-print("pasted \(pasted) image(s) + \(text.count) chars" + (send ? ", sent" : ""))
+print("pasted \(pasted) image(s) + \(text.count) chars into \(app.localizedName ?? "Claude")" + (send ? ", sent" : ""))

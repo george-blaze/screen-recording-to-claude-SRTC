@@ -285,6 +285,7 @@ def finish(c, video, transcript=None):
         tf = workdir / "prompt.txt"; tf.write_text(body)
         cmd = [str(HERE / "paste"), str(tf)] + (["--send"] if c["auto_send"] else []) + ["--files"] + [str(i) for i in images]
         r = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"paste: rc={r.returncode} {r.stdout.strip()} {r.stderr.strip()}")
         if r.returncode:
             notify("SRTC", "Claude isn't in front; prompt is on the clipboard — paste it.", SOUND_DONE)
         else:
