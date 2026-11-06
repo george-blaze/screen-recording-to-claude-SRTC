@@ -82,8 +82,16 @@ def main():
         print(json.dumps({"ready": False}), flush=True)
         sys.exit(2)
     if len(sys.argv) > 1:                                    # one-shot: python asr_deepgram.py file.wav
-        for sg in transcribe(sys.argv[1], key):
+        try:
+            segs = transcribe(sys.argv[1], key)
+        except Exception as e:
+            msg = short_error(e)
+            if "401" in msg: msg += "  → the key is not accepted. Deepgram shows an ID (xxxxxxxx-xxxx-…) and a secret; store the secret, see docs/settings.md"
+            print(f"deepgram: {msg}"); sys.exit(1)
+        if not segs: print("(no speech recognized)")
+        for sg in segs:
             t = int(sg["start"]); print(f"[{t // 60:02d}:{t % 60:02d}] {sg['text']}")
+        print(f"deepgram OK: nova-3, {sum(len(sg['text'].split()) for sg in segs)} words")
         return
     print(json.dumps({"ready": True}), flush=True)
     for line in sys.stdin:
