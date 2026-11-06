@@ -42,27 +42,41 @@ DEFAULTS = {
     "max_prompt_chars": 1200,
     "hotkey": "ctrl+cmd+s",                   # read by vtc-hotkey at launch; restart the agent after changing
     "pointer_moments": 24,
-    "warn_sound": "",                         # path to any audio file to use as the countdown; empty = sounds/countdown.aiff
+    "warn_sound": "",                         # path to any audio file to use as the 20-s countdown; empty = sounds/countdown.aiff (the only place it plays)
+    "start_sound": "",                        # played when the mic is live; empty = sounds/start.aiff
+    "error_sound": "",                        # played on failures / attention notices; empty = sounds/error.aiff
     "keep_days": 7,                           # delete takes older than this after each delivery (0 = keep forever)
     "keep_last": 30,                          # always keep at least the newest N takes                    # max zoomed screenshots of what you pointed at / circled / clicked
 }
-SOUND_START = "/System/Library/Sounds/Tink.aiff"
-SOUND_ALERT = "/System/Library/Sounds/Sosumi.aiff"
+SOUND_START = str(HERE / "sounds" / "start.aiff")       # rising three-note chime: the mic is live, talk
+if not os.path.exists(SOUND_START): SOUND_START = "/System/Library/Sounds/Tink.aiff"
+SOUND_ALERT = str(HERE / "sounds" / "error.aiff")       # low two-note buzz: something failed or needs attention
+if not os.path.exists(SOUND_ALERT): SOUND_ALERT = "/System/Library/Sounds/Basso.aiff"
 SOUND_WARN = str(HERE / "sounds" / "countdown.aiff")   # 20-s countdown: 1 beep/s, double-time last 5 s, long tone at 0
 SOUND_DONE = "/System/Library/Sounds/Glass.aiff"
 
 
+CFG_CACHE = {}
+
+
 def cfg():
+    global CFG_CACHE
     c = dict(DEFAULTS)
     if CONFIG.exists():
         try: c.update(json.loads(CONFIG.read_text()))
         except Exception as e: print(f"warning: bad {CONFIG}: {e}")
     else:
         CONFIG.parent.mkdir(parents=True, exist_ok=True); CONFIG.write_text(json.dumps(c, indent=2))
+    CFG_CACHE = c
     return c
 
 
 def notify(title, text="", sound=None):
+    try:
+        c = CFG_CACHE if CFG_CACHE else {}
+        if sound == SOUND_START and c.get("start_sound"): sound = c["start_sound"]
+        if sound == SOUND_ALERT and c.get("error_sound"): sound = c["error_sound"]
+    except Exception: pass
     if sound and os.path.exists(sound):
         subprocess.Popen(["afplay", sound])
     subprocess.Popen(["osascript", "-e", f'display notification "{text}" with title "{title}"'])

@@ -60,8 +60,8 @@ let cancelItem = NSMenuItem(title: "Cancel recording (Esc)", action: #selector(C
 let micTestItem = NSMenuItem(title: "Test microphone (5 s)", action: #selector(Ctl.micTest), keyEquivalent: "")
 var micTesting = false
 class Ctl: NSObject {
-    @objc func toggle() { run("toggle") }
-    @objc func cancel() { run("cancel") }
+    @objc func toggle() { toggleAction() }
+    @objc func cancel() { if counting { cancelCountdown() } else { run("cancel") } }
     @objc func micTest() {
         guard !micTesting, readState()?.phase != "recording" else { return }
         micTesting = true; micTestItem.isEnabled = false
@@ -116,6 +116,48 @@ func placePanel() {
     if let scr = NSScreen.main { panel.setFrameOrigin(NSPoint(x: scr.visibleFrame.maxX - 280, y: scr.visibleFrame.maxY - 110)) }
 }
 
+// ---------------- 3-2-1 before a take, "finished" after it ----------------
+var counting = false
+var countTimer: Timer? = nil
+var toastUntil = Date.distantPast
+let red = NSColor(calibratedRed: 1, green: 0.3, blue: 0.3, alpha: 1)
+let green = NSColor(calibratedRed: 0.35, green: 0.9, blue: 0.5, alpha: 1)
+func showPanel(_ big: String, _ small: String, _ color: NSColor, size: CGFloat = 40) {
+    label.stringValue = big; label.textColor = color; label.font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)
+    sub.stringValue = small
+    if !panel.isVisible { placePanel(); panel.orderFrontRegardless() }
+}
+func hidePanel() { if panel.isVisible { panel.orderOut(nil) } }
+func startCountdown() {
+    guard !counting else { return }
+    counting = true; var n = 3
+    showPanel("3", "recording starts · Esc to abort", red)
+    item.button?.attributedTitle = attributed("● 3", .systemRed)
+    countTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { t in
+        n -= 1
+        if n > 0 {
+            showPanel("\(n)", "recording starts · Esc to abort", red); item.button?.attributedTitle = attributed("● \(n)", .systemRed)
+        } else {
+            t.invalidate(); countTimer = nil; counting = false
+            showPanel("GO", "talk after the chime", red)      // runner plays the start chime once the mic is live
+            toastUntil = Date().addingTimeInterval(1.5)
+            run("toggle")
+        }
+    }
+}
+func cancelCountdown() {
+    countTimer?.invalidate(); countTimer = nil; counting = false; hidePanel(); refresh()
+}
+func toggleAction() {
+    if counting { cancelCountdown(); return }
+    if readState()?.phase == "recording" { run("toggle") }          // stop
+    else if readState() == nil { startCountdown() }                 // idle → 3-2-1 → start
+}
+func showFinished() {
+    showPanel("Finished", "recording session delivered", green, size: 30)
+    toastUntil = Date().addingTimeInterval(3.0)
+}
+
 func attributed(_ text: String, _ color: NSColor) -> NSAttributedString {
     NSAttributedString(string: text, attributes: [.foregroundColor: color, .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)])
 }
@@ -123,21 +165,23 @@ var lastPhase = ""
 func refresh() {
     let st = readState()
     let now = Date().timeIntervalSince1970
+    let toast = Date() < toastUntil                      // "GO" / "Finished" stays up briefly whatever the state says
+    if counting { toggleItem.title = "Abort countdown"; cancelItem.isHidden = false; micTestItem.isEnabled = false; return }
     if let st = st, st.phase == "recording" {
         let el = max(0, now - st.started); let left = st.cap - el
         let mm = Int(el) / 60, ss = Int(el) % 60
         if left <= st.warn {
             item.button?.attributedTitle = attributed(String(format: "⚠ %d s", Int(left.rounded())), .systemRed)
-            label.stringValue = String(format: "%d", Int(left.rounded())); if !panel.isVisible { placePanel(); panel.orderFrontRegardless() }
+            showPanel(String(format: "%d", Int(left.rounded())), "seconds left · hotkey to stop", red)
         } else {
-            item.button?.attributedTitle = attributed(String(format: "● %d:%02d", mm, ss), .systemRed); if panel.isVisible { panel.orderOut(nil) }
+            item.button?.attributedTitle = attributed(String(format: "● %d:%02d", mm, ss), .systemRed); if !toast { hidePanel() }
         }
         toggleItem.title = "Stop recording"; cancelItem.isHidden = false; micTestItem.isEnabled = false
     } else if let st = st, st.phase == "processing" {
-        item.button?.attributedTitle = attributed("⟳ processing", .labelColor); if panel.isVisible { panel.orderOut(nil) }
+        item.button?.attributedTitle = attributed("⟳ processing", .labelColor); if !toast { hidePanel() }
         toggleItem.title = "Start recording"; cancelItem.isHidden = true; micTestItem.isEnabled = !micTesting
     } else {
-        item.button?.attributedTitle = attributed(micTesting ? "◌ mic test" : "○", .labelColor); if panel.isVisible { panel.orderOut(nil) }
+        item.button?.attributedTitle = attributed(micTesting ? "◌ mic test" : "○", .labelColor); if !toast { hidePanel() }
         toggleItem.title = "Start recording"; cancelItem.isHidden = true; micTestItem.isEnabled = !micTesting
     }
     // macOS blocks every global hotkey while an app holds secure keyboard input (a focused password field)
@@ -145,7 +189,10 @@ func refresh() {
         item.button?.attributedTitle = attributed("○ hotkey blocked: password field", .systemOrange)
     }
     let phase = st?.phase ?? "idle"
-    if phase != lastPhase { lastPhase = phase; checkRecording(force: true) }
+    if phase != lastPhase {
+        if lastPhase == "processing" && phase == "idle" { showFinished() }
+        lastPhase = phase; checkRecording(force: true)
+    }
 }
 Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in refresh() }
 
@@ -191,9 +238,9 @@ func arm() {
     NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { e in
         let mods = e.modifierFlags.intersection([.control, .command, .option, .shift])
         if e.keyCode == keyCode && mods == modifiers {
-            if Date().timeIntervalSince(lastToggle) > 0.8 { lastToggle = Date(); run("toggle") }
-        } else if e.keyCode == 53 /* Esc */ && mods.isEmpty && recording {
-            run("cancel")
+            if Date().timeIntervalSince(lastToggle) > 0.8 { lastToggle = Date(); DispatchQueue.main.async { toggleAction() } }
+        } else if e.keyCode == 53 /* Esc */ && mods.isEmpty && (recording || counting) {
+            DispatchQueue.main.async { if counting { cancelCountdown() } else { run("cancel") } }
         }
     }
     NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { _ in logEvent("move") }

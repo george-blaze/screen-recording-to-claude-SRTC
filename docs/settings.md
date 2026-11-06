@@ -13,6 +13,8 @@ everything else is read at the start of each take.
 | `cap_seconds` | `600` | Hard stop; the take is delivered automatically when reached. |
 | `warn_seconds` | `20` | Countdown length before the cap: sound, notification, red panel. |
 | `warn_sound` | `""` | Path to any audio file for the countdown. Empty uses `sounds/countdown.aiff` (Sosumi looped for 20 s). |
+| `start_sound` | `""` | Played once the mic is live (after the 3-2-1 count). Empty = `sounds/start.aiff`, a short rising three-note chime. |
+| `error_sound` | `""` | Played on failures and attention notices (mic failed, muffled, nothing recorded). Empty = `sounds/error.aiff`, a low two-note buzz. The 20-second alarm (`warn_sound`) plays for the countdown only, never for anything else. |
 | `fps` | `5` | Recording frame rate. 5 keeps files small; the digest samples at 1 fps anyway. |
 | `width` | `1920` | Recording width in pixels (height follows the display's aspect ratio). |
 | `asr_engine` | `"auto"` | `"auto"`: Deepgram nova-3 (the cloud recognizer VoiceOS uses; far more forgiving of distant or muffled audio, word-timed) whenever `deepgram_api_key` is set, else local mlx-whisper. `"deepgram"` / `"whisper"` force one. If Deepgram fails on a chunk (no network, bad key) that chunk goes to local Whisper automatically. |

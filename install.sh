@@ -18,6 +18,8 @@ say "2/7 Building helpers"
 [ -x "$DIR/screencast/transcribe" ] || swiftc -O "$DIR/screencast/transcribe.swift" -o "$DIR/screencast/transcribe"
 mkdir -p "$DIR/sounds"
 [ -f "$DIR/sounds/countdown.aiff" ] || ffmpeg -y -v error -stream_loop -1 -i /System/Library/Sounds/Sosumi.aiff -t 20 -ac 1 -ar 44100 -c:a pcm_s16be "$DIR/sounds/countdown.aiff"
+[ -f "$DIR/sounds/start.aiff" ] || ffmpeg -y -v error -f lavfi -i "aevalsrc='0.45*sin(2*PI*523*t)*between(t,0,0.11)*(1-abs(t-0.055)/0.055*0.3) + 0.45*sin(2*PI*784*t)*between(t,0.13,0.24)*(1-abs(t-0.185)/0.055*0.3) + 0.5*sin(2*PI*1047*t)*between(t,0.26,0.46)*max(0,1-(t-0.26)/0.2)':s=44100:d=0.5" -af "afade=t=out:st=0.44:d=0.06" "$DIR/sounds/start.aiff"
+[ -f "$DIR/sounds/error.aiff" ] || ffmpeg -y -v error -f lavfi -i "aevalsrc='0.5*sin(2*PI*196*t)*between(t,0,0.18) + 0.5*sin(2*PI*147*t)*between(t,0.22,0.5)*max(0,1-(t-0.22)/0.28)':s=44100:d=0.55" -af "lowpass=f=1200" "$DIR/sounds/error.aiff"
 echo "ok"
 
 say "3/7 Signing helpers (stable identity → permissions survive rebuilds)"

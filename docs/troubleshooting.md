@@ -103,3 +103,9 @@ Switch the recognizer to the one VoiceOS uses: create a Deepgram API key (free c
 `~/.config/vtc.json` set `"asr_engine": "deepgram"` and `"deepgram_api_key": "<key>"`. Chunks go to nova-3 over HTTPS
 while you record; nothing else changes.
 
+## I hear the 20-second alarm at random
+
+It should play only during the last 20 seconds before the cap. Every other sound is distinct: a rising chime when the
+mic is live, a low buzz for errors and notices, Glass when the take has been delivered. If you still hear the alarm
+outside the countdown, something else is playing `sounds/countdown.aiff`: `pgrep -fl afplay` shows it.
+
