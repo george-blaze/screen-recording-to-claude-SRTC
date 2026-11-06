@@ -133,13 +133,15 @@ def mux_audio(video, wav):
     frame stamps. Returns the shift in seconds, or None on failure."""
     tmp = video.with_name(video.stem + ".mux.mp4")
     vd, ad = media_duration(video), media_duration(wav)
-    delta = round(vd - ad, 3) if (vd and ad and 0 < vd - ad < 5) else 0.0
-    r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-itsoffset", str(delta), "-i", str(wav),
+    delta = round(vd - ad, 3) if (vd and ad and -8 < vd - ad < 8) else 0.0
+    # delta > 0: mic started after the screen → delay the audio; delta < 0: mic was live before the first frame → trim its head
+    ain = (["-itsoffset", str(delta)] if delta > 0 else ["-ss", str(-delta)] if delta < 0 else []) + ["-i", str(wav)]
+    r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video)] + ain + [
                         "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k",
                         "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(tmp)], capture_output=True, text=True)
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 1024:
         print(f"mux failed: {r.stderr.strip()[-200:]}", flush=True); tmp.unlink(missing_ok=True); return None
-    tmp.replace(video); print(f"  mic audio muxed (started {delta:.2f}s after the screen)", flush=True); return delta
+    tmp.replace(video); print(f"  mic audio muxed (mic started {delta:+.2f}s relative to the screen)", flush=True); return delta
 
 
 def screencapture_cmd(c, out):
@@ -181,12 +183,13 @@ def cmd_run(c, out):
         stop_mic()
         piped = b == "ffmpeg" and voice and use_miccap(c) and c["mic"] not in (None, "", "none")
         cmd = ffmpeg_cmd(c, out, piped_mic=piped) if b == "ffmpeg" else screencapture_cmd(c, out)
-        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-{b}.log", "w"))
         if piped:
-            time.sleep(0.8)                      # avfoundation takes about a second to deliver its first frame; start the mic then
+            # mic first, at once: people start talking the moment they press the hotkey. The screen follows; the mux
+            # trims whatever audio precedes the first frame and the transcript keeps every word.
             mic_p = subprocess.Popen([str(MICCAP), "--device", _sc.LAST_MIC_NAME], stdout=subprocess.PIPE, stderr=open(STATE_DIR / "miccap.log", "w"))
             aud_p = subprocess.Popen(audio_cmd(c, out), stdin=mic_p.stdout, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / "recorder-audio.log", "w"))
             mic_p.stdout.close()                 # the audio ffmpeg owns the read end; miccap sees EPIPE when it stops
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(STATE_DIR / f"recorder-{b}.log", "w"))
         STATE.write_text(json.dumps({"runner_pid": os.getpid(), "recorder_pid": p.pid, "mic_pid": mic_p.pid if mic_p else None,
                                      "audio_pid": aud_p.pid if aud_p else None, "backend": b, "phase": "recording", "mic": _sc.LAST_MIC_NAME,
                                      "mic_mode": "voice" if piped else "raw", "file": str(out if b == "ffmpeg" else out.with_suffix(".mov")),
@@ -549,7 +552,7 @@ class StreamASR:
             if len(segs) >= 3 and len(set(texts)) <= max(1, len(texts) // 3): segs = []   # "I", "I", "I", … across a chunk
             segs = [sg for sg in segs if len(sg["text"].strip().strip(".,!? ")) > 2 or len(segs) == 1 and len(texts[0]) > 2]
             for sgm in segs:
-                t = base + sgm["start"]; lines.append(f"[{int(t) // 60:02d}:{int(t) % 60:02d}] {sgm['text']}")
+                t = max(0.0, base + sgm["start"]); lines.append(f"[{int(t) // 60:02d}:{int(t) % 60:02d}] {sgm['text']}")
         shutil.rmtree(self.chunks, ignore_errors=True)
         return "\n".join(lines)
 
